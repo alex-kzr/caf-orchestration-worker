@@ -28,3 +28,5 @@ The JSON artifact is an experiment record, not a durable audit store. The curren
 1. Run the same request and fixture through an actual CrewAI Flow with a pinned, tested version and a verified model configuration. No CrewAI package or API key is required for the current baseline.
 2. Add real, separately verified CLI adapters, workspace isolation and Git integration at the runtime boundary.
 3. Compare Flow and baseline on identical worktrees, code tests and metrics; persist artifacts/events durably before claiming recovery.
+
+**CrewAI availability check (2026-10-13):** `importlib.util.find_spec("crewai")` returned `None` in both the system Python and the worker's Python 3.12 uv environment. A key-free Flow path has therefore not been exercised or claimed; integration remains pending installation and a tested configuration.
