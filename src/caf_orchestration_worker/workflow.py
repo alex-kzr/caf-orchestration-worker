@@ -44,6 +44,11 @@ class StageArtifact:
     started_at: str
     ended_at: str
     events: tuple[dict[str, Any], ...] = ()
+    exit_code: int | None = None
+    session_id: str | None = None
+    changed_files: tuple[str, ...] = ()
+    commits: tuple[str, ...] = ()
+    usage: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -71,21 +76,27 @@ async def run_baseline(
         raise ValueError("workspace must be an existing directory")
     artifact = RunArtifact(request.run_id, request.correlation_id, "asyncio-baseline", "running", None, 0, _now(), request.base_revision)
 
-    async def stage(operation: str) -> StageArtifact:
+    async def stage(operation: str, prompt: str | None = None) -> StageArtifact:
         task_id = f"{request.run_id}:{len(artifact.stages) + 1}:{operation}"
-        task = CodingTask(task_id, request.correlation_id, request.prompt, request.provider, operation)
+        task = CodingTask(task_id, request.correlation_id, prompt or request.prompt, request.provider, operation)
         started = _now()
-        result = await runtime.execute(task, workspace)
-        if result.run_id != task_id or result.correlation_id != request.correlation_id:
-            raise ValueError("runtime returned mismatched identity")
-        output = dict(result.output)
-        json.dumps(output)  # Persisted artifacts must be JSON-compatible.
-        item = StageArtifact(
-            operation, task_id, result.status.value,
-            result.failure_class.value if result.failure_class else None,
-            result.summary, output, started, _now(),
-            tuple(asdict(event) for event in result.events),
-        )
+        try:
+            result = await runtime.execute(task, workspace)
+            if result.run_id != task_id or result.correlation_id != request.correlation_id:
+                raise ValueError("runtime returned mismatched identity")
+            output = dict(result.output)
+            usage = dict(result.usage) if result.usage is not None else None
+            events = tuple(asdict(event) for event in result.events)
+            json.dumps((output, usage, events))  # Persisted artifacts must be JSON-compatible.
+            item = StageArtifact(
+                operation, task_id, result.status.value,
+                result.failure_class.value if result.failure_class else None,
+                result.summary, output, started, _now(), events,
+                result.exit_code, result.session_id, result.changed_files, result.commits, usage,
+            )
+        except Exception as exc:
+            # Exception details may contain CLI output, paths or credentials.
+            item = StageArtifact(operation, task_id, "failed", "infrastructure", type(exc).__name__, {}, started, _now())
         artifact.stages.append(item)
         return item
 
@@ -110,7 +121,10 @@ async def run_baseline(
         if approved:
             test = await stage("test")
             if test.status != AgentStatus.SUCCEEDED.value:
-                failure = f"test_{test.failure_class or test.status}"
+                if test.failure_class == "quality_gate":
+                    failure = "test_failed"
+                else:
+                    return finish("blocked", f"test_{test.failure_class or test.status}")
             elif not isinstance(test.output.get("passed"), bool):
                 return finish("blocked", "invalid_test_output")
             elif test.output["passed"]:
@@ -121,7 +135,9 @@ async def run_baseline(
             failure = "review_rejected"
         if artifact.iterations >= request.max_corrections:
             return finish("blocked", failure)
-        correction = await stage("correct")
+        evidence = review.output if failure == "review_rejected" else test.output
+        correction_prompt = f"{request.prompt}\n\nCorrect the {failure} using this structured evidence: {json.dumps(evidence)}"
+        correction = await stage("correct", correction_prompt)
         artifact.iterations += 1
         if correction.status != AgentStatus.SUCCEEDED.value:
             return finish("blocked", f"correct_{correction.failure_class or correction.status}")

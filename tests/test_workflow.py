@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 from caf_agent_runtime import SyntheticOutcome, SyntheticRuntime
+from caf_agent_runtime import AgentStatus, FailureClass
 from caf_orchestration_worker import RunRequest, run_baseline, write_artifact
 
 
@@ -93,3 +94,81 @@ def test_fixture_base_revision_is_recorded_in_artifact(tmp_path: Path) -> None:
     request = RunRequest("run-7", "corr-7", "Change", "synthetic", base_revision="b9761bad")
     artifact = asyncio.run(run_baseline(request, runtime, tmp_path))
     assert artifact.to_dict()["base_revision"] == "b9761bad"
+
+
+def test_correction_receives_structured_review_findings(tmp_path: Path) -> None:
+    class RecordingRuntime(SyntheticRuntime):
+        def __init__(self) -> None:
+            super().__init__({
+                "review": [SyntheticOutcome(output={"approved": False, "findings": ["Handle empty input"]}), SyntheticOutcome(output={"approved": True})],
+                "test": [SyntheticOutcome(output={"passed": True})],
+            })
+            self.tasks = []
+
+        async def execute(self, task, workspace, session_id=None):
+            self.tasks.append(task)
+            return await super().execute(task, workspace, session_id)
+
+    runtime = RecordingRuntime()
+    artifact = asyncio.run(run_baseline(RunRequest("run-8", "corr-8", "Change", "synthetic"), runtime, tmp_path))
+    assert artifact.status == "succeeded"
+    correction = next(task for task in runtime.tasks if task.operation == "correct")
+    assert "Handle empty input" in correction.prompt
+
+
+def test_runtime_exception_becomes_blocked_artifact(tmp_path: Path) -> None:
+    class BrokenRuntime(SyntheticRuntime):
+        async def execute(self, task, workspace, session_id=None):
+            if task.operation == "implement":
+                raise OSError("private diagnostic")
+            return await super().execute(task, workspace, session_id)
+
+    artifact = asyncio.run(run_baseline(RunRequest("run-9", "corr-9", "Change", "synthetic"), BrokenRuntime(), tmp_path))
+    assert artifact.status == "blocked"
+    assert artifact.reason == "implement_infrastructure"
+    assert artifact.stages[-1].failure_class == "infrastructure"
+    assert "private diagnostic" not in str(artifact.to_dict())
+
+
+def test_test_runtime_failure_blocks_without_correction(tmp_path: Path) -> None:
+    runtime = SyntheticRuntime({
+        "review": [SyntheticOutcome(output={"approved": True})],
+        "test": [SyntheticOutcome(status=AgentStatus.FAILED, failure_class=FailureClass.INFRASTRUCTURE)],
+    })
+    artifact = asyncio.run(run_baseline(RunRequest("run-10", "corr-10", "Change", "synthetic"), runtime, tmp_path))
+    assert artifact.status == "blocked"
+    assert artifact.reason == "test_infrastructure"
+    assert [stage.operation for stage in artifact.stages] == ["plan", "implement", "review", "test"]
+
+
+def test_quality_gate_failure_causes_bounded_correction(tmp_path: Path) -> None:
+    runtime = SyntheticRuntime({
+        "review": [SyntheticOutcome(output={"approved": True})],
+        "test": [
+            SyntheticOutcome(status=AgentStatus.FAILED, failure_class=FailureClass.QUALITY_GATE, output={"passed": False, "checks": ["unit"]}),
+            SyntheticOutcome(output={"passed": True}),
+        ],
+    })
+    artifact = asyncio.run(run_baseline(RunRequest("run-12", "corr-12", "Change", "synthetic"), runtime, tmp_path))
+    assert artifact.status == "succeeded"
+    assert artifact.iterations == 1
+    assert [stage.operation for stage in artifact.stages] == ["plan", "implement", "review", "test", "correct", "review", "test"]
+
+
+def test_stage_retains_runtime_result_metadata(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    class MetadataRuntime(SyntheticRuntime):
+        async def execute(self, task, workspace, session_id=None):
+            result = await super().execute(task, workspace, session_id)
+            if task.operation == "plan":
+                return replace(result, exit_code=0, session_id="session-1", changed_files=("sample.py",), commits=("abc123",), usage={"tokens": 12})
+            return result
+
+    runtime = MetadataRuntime({"review": [SyntheticOutcome(output={"approved": True})], "test": [SyntheticOutcome(output={"passed": True})]})
+    artifact = asyncio.run(run_baseline(RunRequest("run-11", "corr-11", "Change", "synthetic"), runtime, tmp_path))
+    assert artifact.stages[0].exit_code == 0
+    assert artifact.stages[0].session_id == "session-1"
+    assert artifact.stages[0].changed_files == ("sample.py",)
+    assert artifact.stages[0].commits == ("abc123",)
+    assert artifact.stages[0].usage == {"tokens": 12}

@@ -19,6 +19,7 @@ The demo emits a JSON run artifact with correlation ID, stage outcomes, timestam
 ## Contract and boundaries
 
 `run_baseline(request, runtime, workspace)` calls the shared `CodingAgentRuntime` protocol for `plan`, `implement`, `review`, `correct` and `test`. The synthetic runtime performs no filesystem mutation. Each stage gets a unique task ID and the same correlation ID. Review results require a boolean `output.approved`; test results require a boolean `output.passed`. Missing verdicts block the run. A failed review or test can trigger a bounded correction and reevaluation. Runtime failures are recorded as blocked with their failure class.
+Correction tasks receive the structured review or test evidence. Explicit quality-gate failures can be corrected; infrastructure, agent and timeout failures block without pretending a code change can repair them. Stage artifacts retain runtime exit code, session ID, changed files, commits and usage when available. Unexpected runtime exceptions become terminal infrastructure records containing only the exception type, because exception text could expose private data.
 
 The JSON artifact is an experiment record, not a durable audit store. The current workflow is sequential: no task DAG, worktrees, integration branch, cancellation propagation, restart recovery, API transport, CLI execution, CrewAI mode or real quality gate has been implemented here. The target lifecycle and evaluation criteria remain in the umbrella `SPEC.md` and `docs/`.
 
