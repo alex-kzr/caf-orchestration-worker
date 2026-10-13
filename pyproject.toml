@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "caf-orchestration-worker"
+version = "0.1.0"
+description = "CAF provider-neutral orchestration experiment"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["caf-agent-runtime"]
+
+[tool.uv.sources]
+caf-agent-runtime = { path = "../caf-agent-runtime", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
