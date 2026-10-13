@@ -25,6 +25,12 @@ async def run_one_synthetic(
     async def execute(claim: ClaimedRun) -> dict:
         if claim.target_repository != "caf-sample-app":
             return {"status": "blocked", "reason": "repository_not_allowed"}
+        if claim.prompt == "CAF_SYNTHETIC_DELAY_3_SECONDS":
+            # Bounded test-only delay makes lease renewal observable in PG.
+            await asyncio.sleep(3)
+        if claim.prompt == "CAF_SYNTHETIC_DELAY_8_SECONDS":
+            # Test-owned worker-crash fixture; never invokes a coding CLI.
+            await asyncio.sleep(8)
         runtime = SyntheticRuntime({
             "review": [SyntheticOutcome(output={"approved": True, "findings": []})],
             "test": [SyntheticOutcome(output={"passed": True, "checks": ["synthetic gate"]})],

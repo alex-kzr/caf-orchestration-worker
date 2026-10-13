@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `1fbef1d5f2325d124c39fac256b11aa722a7c2e8` and `caf-control-api==0.1.0` at commit `3dc0fa331bf5b122b45f646f101a7ddce9631657` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
+`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `1fbef1d5f2325d124c39fac256b11aa722a7c2e8` and `caf-control-api==0.1.0` at commit `8a3f442857a2cf8abdb11928a805a70cfa1b1146` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
 
 ## Contract and boundaries
 
@@ -29,7 +29,7 @@ The standalone JSON artifact is an experiment record, not a durable audit store.
 
 ## Explicit queue-to-synthetic proof
 
-`run_synthetic_claim_once(store, owner, allowed_repositories)` accepts an opened `PostgresStore` or compatible queue store. Before claiming anything, it checks the **actual connected database name** and refuses to run unless it starts with `caf_queue_test_`; it cannot consume the shared `caf` queue. It claims at most one queued Run, checks the repository slug against the caller's mapping to an existing directory, runs only `SyntheticRuntime` through the baseline policy, labels the artifact `execution_kind: synthetic-queue-proof`, and conditionally persists `succeeded` or `failed` under the current lease owner. A lost lease raises `LostLeaseError`; an unknown repository is recorded as failed without runtime invocation. It does not verify a Git revision or modify a workspace. There is no polling daemon, heartbeat, orphan reconciliation, real CLI invocation or automatic startup in Compose. Synthetic success is not code acceptance.
+`run_synthetic_claim_once(store, owner, allowed_repositories)` accepts an opened `PostgresStore` or compatible queue store. Before claiming anything, it checks the **actual connected database name** and refuses to run unless it starts with `caf_queue_test_`; it cannot consume the shared `caf` queue. It claims at most one queued Run, checks the repository slug against the caller's mapping to an existing directory, runs only `SyntheticRuntime` through the baseline policy, labels the artifact `execution_kind: synthetic-queue-proof`, and conditionally persists `succeeded` or `failed` under the current lease owner. A lost lease raises `LostLeaseError`; an unknown repository is recorded as failed without runtime invocation. It does not verify a Git revision or modify a workspace. The separate `p0-test-daemon` Compose profile now runs a persistent synthetic polling loop with heartbeat and expired-lease quarantine against dedicated test PostgreSQL. This one-shot function still does not invoke a real CLI. Synthetic success is not code acceptance.
 
 Unit tests cover identity propagation, stage order, allowlist rejection and lost ownership. The opt-in `tests/test_queue_bridge_live.py` ran in a dedicated temporary `caf_queue_test_*` database and verified queue claim, worker handoff, synthetic stages and persisted JSON artifact against PostgreSQL. It checks the actual connected database before writing, deletes its own Task/Run, and requires an external harness to create/drop the isolated database. No task was run from the shared CAF queue.
 
@@ -50,8 +50,8 @@ host experiment for the discount-code fixture. It requires
 `CAF_QUEUE_TEST_DATABASE_URL`, `CAF_SAMPLE_REPOSITORY`,
 `CAF_TEST_WORKTREE_ROOT` and `CAF_CODEX_EXECUTABLE`. It checks the connected
 test database, exact fixture prompt, sample base SHA and clean checkout before
-claiming. It creates
-an external worktree, permits only the fixture implementation file, invokes
+claiming. It creates an external worktree, permits only the fixture
+implementation file, invokes
 Codex once, runs both deterministic acceptance suites, asks Claude for a
 structured no-tools review, then stores the diff, verdict, gate results and
 local commit SHA in the Run artifact. The commit stays on a local branch; no
@@ -66,6 +66,21 @@ fresh worktree, reruns both suites and reviews with the full requirements in
 the prompt. It records `source_run_id` and `implementation.status` as
 `reused_verified_diff`; it does not ask Codex to regenerate code. The original
 failed Run remains terminal and is never replayed.
+
+`WorkerAPIStore` is a narrow alternative queue transport for a host worker.
+It accepts only an explicit `http://127.0.0.1:<port>` control API, disables
+redirects, uses a distinct scoped `CAF_WORKER_TOKEN` and never sends the token
+in a URL. The host fixture selects it only when `CAF_WORKER_API_URL` and
+`CAF_WORKER_TOKEN` are set; otherwise it uses the direct isolated PostgreSQL
+test URL. Both paths verify the connected database begins with
+`caf_queue_test_` before any claim. No live worker token has been issued, and
+no persistent host API worker is started by normal commands.
+
+`caf_orchestration_worker.synthetic_daemon` is a persistent **test-only**
+polling loop. The umbrella's `p0-test-daemon` profile gives it an isolated
+test PostgreSQL database, no CLI credentials, one claim at a time and a
+heartbeat healthcheck. An exact prompt `CAF_SYNTHETIC_DELAY_3_SECONDS` adds
+only a three-second synthetic delay for observing lease renewal.
 
 ## Next validation steps
 

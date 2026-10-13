@@ -10,6 +10,7 @@ from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_agent_runtime import CodexRuntime, CodingTask
 from caf_orchestration_worker.queue_runner import CleanupTimeout, LostLeaseError, dispatch_once
 from caf_orchestration_worker.bounded_worker import run_one_synthetic
+from caf_orchestration_worker.synthetic_daemon import serve
 
 
 def claim():
@@ -223,3 +224,26 @@ def test_bounded_synthetic_worker_guards_database_and_persists_artifact(tmp_path
     assert artifact["execution_kind"] == "bounded-synthetic-worker"
     assert artifact["status"] == "succeeded"
     assert store.completed == ("succeeded", artifact)
+
+
+def test_persistent_synthetic_worker_polls_until_stopped(tmp_path: Path):
+    store = FakeStore()
+    store.queued = False
+    store.database_name = lambda: "caf_queue_test_unit"
+    heartbeat = tmp_path / "heartbeat"
+
+    async def scenario():
+        stop = asyncio.Event()
+        worker = asyncio.create_task(serve(
+            store, tmp_path, stop, heartbeat, poll_seconds=.01,  # type: ignore[arg-type]
+        ))
+        for _ in range(100):
+            if store.quarantines >= 2:
+                break
+            await asyncio.sleep(.01)
+        stop.set()
+        await worker
+
+    asyncio.run(scenario())
+    assert store.quarantines >= 2
+    assert heartbeat.read_text() == "ready\n"

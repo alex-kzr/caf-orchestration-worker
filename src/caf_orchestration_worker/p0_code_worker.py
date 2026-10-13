@@ -16,6 +16,7 @@ from caf_agent_runtime import AgentStatus, ClaudeRuntime, CodexRuntime, CodingTa
 from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_control_api.storage import ClaimedRun, PostgresStore
 
+from .api_store import WorkerAPIStore
 from .queue_runner import dispatch_once
 
 
@@ -76,7 +77,7 @@ def _gate(workspace: Path, filename: str) -> dict:
 
 
 async def run_one_code_fixture(
-    store: PostgresStore, owner: str, repository: Path, worktree_root: Path,
+    store: PostgresStore | WorkerAPIStore, owner: str, repository: Path, worktree_root: Path,
     codex_executable: Path,
 ) -> dict | None:
     """Claim once from a test DB and persist diff, gates and Claude verdict."""
@@ -215,8 +216,13 @@ async def run_one_code_fixture(
 
 def main() -> int:
     """Use explicit env only for the isolated, one-shot local experiment."""
-    store = PostgresStore(os.environ["CAF_QUEUE_TEST_DATABASE_URL"])
-    store.open()
+    if os.getenv("CAF_WORKER_API_URL"):
+        store: PostgresStore | WorkerAPIStore = WorkerAPIStore(
+            os.environ["CAF_WORKER_API_URL"], os.environ["CAF_WORKER_TOKEN"],
+        )
+    else:
+        store = PostgresStore(os.environ["CAF_QUEUE_TEST_DATABASE_URL"])
+        store.open()
     try:
         result = asyncio.run(run_one_code_fixture(
             store, f"worker-{uuid4().hex}",
@@ -225,7 +231,8 @@ def main() -> int:
             Path(os.environ["CAF_CODEX_EXECUTABLE"]),
         ))
     finally:
-        store.close()
+        if isinstance(store, PostgresStore):
+            store.close()
     print("empty" if result is None else f"{result.get('execution_kind')}: {result['status']}")
     return 0 if result is None or result["status"] == "succeeded" else 1
 
