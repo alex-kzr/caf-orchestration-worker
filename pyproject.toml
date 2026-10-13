@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "CAF provider-neutral orchestration experiment"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["caf-agent-runtime==0.1.0"]
+dependencies = ["caf-agent-runtime==0.1.0", "caf-control-api==0.1.0"]
 
 [project.optional-dependencies]
 flow = [
@@ -17,6 +17,7 @@ flow = [
 
 [tool.uv.sources]
 caf-agent-runtime = { git = "https://github.com/alex-kzr/caf-agent-runtime", rev = "7632e5224379d021a2c777cbd3ce8959c64f377c" }
+caf-control-api = { git = "https://github.com/alex-kzr/caf-control-api", rev = "973ec9d215ce557c9444a9db483e6acf6ab203cf" }
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]

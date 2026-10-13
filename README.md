@@ -1,6 +1,6 @@
 # caf-orchestration-worker
 
-CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Both use the published `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; neither edits Git repositories, runs Codex/Claude CLI, executes tests against code, or persists state to a database.
+CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Both use the published `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; neither edits Git repositories, runs Codex/Claude CLI, or executes tests against code. A separate explicit queue proof can claim one PostgreSQL Run, pass it through the synthetic baseline and persist a labeled artifact; it is not a daemon or a real coding run.
 
 ## Run the synthetic slice
 
@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` from `https://github.com/alex-kzr/caf-agent-runtime` at commit `7632e5224379d021a2c777cbd3ce8959c64f377c`. `uv.lock` records the same exact revision. A fresh checkout needs network access to fetch this Git dependency unless uv already has it cached. The umbrella's adjacent runtime submodule remains useful for development, but the worker does not import from or install that sibling directory. Host Codex runs now require an explicit native executable path; the worker's synthetic demo does not construct a host CLI adapter.
+`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `7632e5224379d021a2c777cbd3ce8959c64f377c` and `caf-control-api==0.1.0` at commit `973ec9d215ce557c9444a9db483e6acf6ab203cf` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
 
 ## Contract and boundaries
 
@@ -25,7 +25,13 @@ The demos emit the same JSON run artifact shape with correlation ID, stage outco
 `run_flow` uses CrewAI 1.15.27 `Flow`, `@start`, `@listen`, and `kickoff_async` to sequence plan, implementation and evaluation. It invokes the same `CodingAgentRuntime` and shared `WorkflowSession` policy as the baseline. The bounded review/correction/test loop remains within the evaluation listener, so this experiment does **not** yet test CrewAI routers, Crew delegation, Flow persistence or restart recovery. No CrewAI Agent or LLM is constructed. The `flow` extra isolates CrewAI's substantial dependency set from baseline-only installations.
 Correction tasks receive the structured review or test evidence. Explicit quality-gate failures can be corrected; infrastructure, agent and timeout failures block without pretending a code change can repair them. Stage artifacts retain runtime exit code, session ID, changed files, commits and usage when available. Unexpected runtime exceptions become terminal infrastructure records containing only the exception type, because exception text could expose private data.
 
-The JSON artifact is an experiment record, not a durable audit store. The current workflow is sequential: no task DAG, worktrees, integration branch, cancellation propagation, restart recovery, API transport, CLI execution, CrewAI mode or real quality gate has been implemented here. The target lifecycle and evaluation criteria remain in the umbrella `SPEC.md` and `docs/`.
+The standalone JSON artifact is an experiment record, not a durable audit store. The current workflow is sequential: no task DAG, worktrees, integration branch, cancellation propagation, restart recovery, API transport, CLI execution, CrewAI Agent mode or real quality gate has been implemented here. The target lifecycle and evaluation criteria remain in the umbrella `SPEC.md` and `docs/`.
+
+## Explicit queue-to-synthetic proof
+
+`run_synthetic_claim_once(store, owner, allowed_repositories)` accepts an opened `PostgresStore` or compatible queue store. Before claiming anything, it checks the **actual connected database name** and refuses to run unless it starts with `caf_queue_test_`; it cannot consume the shared `caf` queue. It claims at most one queued Run, checks the repository slug against the caller's mapping to an existing directory, runs only `SyntheticRuntime` through the baseline policy, labels the artifact `execution_kind: synthetic-queue-proof`, and conditionally persists `succeeded` or `failed` under the current lease owner. A lost lease raises `LostLeaseError`; an unknown repository is recorded as failed without runtime invocation. It does not verify a Git revision or modify a workspace. There is no polling daemon, heartbeat, orphan reconciliation, real CLI invocation or automatic startup in Compose. Synthetic success is not code acceptance.
+
+Unit tests cover identity propagation, stage order, allowlist rejection and lost ownership. The opt-in `tests/test_queue_bridge_live.py` ran in a dedicated temporary `caf_queue_test_*` database and verified queue claim, worker handoff, synthetic stages and persisted JSON artifact against PostgreSQL. It checks the actual connected database before writing, deletes its own Task/Run, and requires an external harness to create/drop the isolated database. No task was run from the shared CAF queue.
 
 ## Next validation steps
 
