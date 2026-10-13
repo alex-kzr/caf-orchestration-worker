@@ -326,12 +326,12 @@ wheels = [
 [[package]]
 name = "caf-agent-runtime"
 version = "0.1.0"
-source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=74e43211c3a159cc0ad2c602cc6784bd40795fab#74e43211c3a159cc0ad2c602cc6784bd40795fab" }
+source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=1fbef1d5f2325d124c39fac256b11aa722a7c2e8#1fbef1d5f2325d124c39fac256b11aa722a7c2e8" }
 
 [[package]]
 name = "caf-control-api"
 version = "0.1.0"
-source = { git = "https://github.com/alex-kzr/caf-control-api?rev=39eae5d125707c67cdd60743c4d342fc984e79dd#39eae5d125707c67cdd60743c4d342fc984e79dd" }
+source = { git = "https://github.com/alex-kzr/caf-control-api?rev=3dc0fa331bf5b122b45f646f101a7ddce9631657#3dc0fa331bf5b122b45f646f101a7ddce9631657" }
 dependencies = [
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -359,8 +359,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=74e43211c3a159cc0ad2c602cc6784bd40795fab" },
-    { name = "caf-control-api", git = "https://github.com/alex-kzr/caf-control-api?rev=39eae5d125707c67cdd60743c4d342fc984e79dd" },
+    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=1fbef1d5f2325d124c39fac256b11aa722a7c2e8" },
+    { name = "caf-control-api", git = "https://github.com/alex-kzr/caf-control-api?rev=3dc0fa331bf5b122b45f646f101a7ddce9631657" },
     { name = "crewai", marker = "extra == 'flow'", specifier = "==1.15.27" },
 ]
 provides-extras = ["flow"]

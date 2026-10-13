@@ -9,6 +9,7 @@ from caf_control_api.storage import ClaimedRun
 from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_agent_runtime import CodexRuntime, CodingTask
 from caf_orchestration_worker.queue_runner import CleanupTimeout, LostLeaseError, dispatch_once
+from caf_orchestration_worker.bounded_worker import run_one_synthetic
 
 
 def claim():
@@ -209,3 +210,16 @@ def test_one_claim_through_real_process_runtime_without_coding_cli(tmp_path: Pat
     assert artifact == {"status": "succeeded", "execution_kind": "local-process-fixture"}
     assert store.completed == ("succeeded", artifact)
     assert store.renewals >= 1
+
+
+def test_bounded_synthetic_worker_guards_database_and_persists_artifact(tmp_path: Path):
+    store = FakeStore()
+    store.database_name = lambda: "caf"
+    with pytest.raises(ValueError, match="caf_queue_test_"):
+        asyncio.run(run_one_synthetic(store, "worker-12345", tmp_path))  # type: ignore[arg-type]
+    assert store.queued
+    store.database_name = lambda: "caf_queue_test_unit"
+    artifact = asyncio.run(run_one_synthetic(store, "worker-12345", tmp_path))  # type: ignore[arg-type]
+    assert artifact["execution_kind"] == "bounded-synthetic-worker"
+    assert artifact["status"] == "succeeded"
+    assert store.completed == ("succeeded", artifact)

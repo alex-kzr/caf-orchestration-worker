@@ -1,9 +1,24 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from caf_agent_runtime import SyntheticOutcome, SyntheticRuntime
 from caf_agent_runtime import AgentStatus, FailureClass
+from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_orchestration_worker import RunRequest, run_baseline, write_artifact
+
+
+def test_unverified_process_cleanup_escapes_workflow(tmp_path: Path) -> None:
+    class BrokenRuntime:
+        async def execute(self, *_):
+            raise ProcessTreeCleanupError("fixture")
+
+    with pytest.raises(ProcessTreeCleanupError):
+        asyncio.run(run_baseline(
+            RunRequest("run-cleanup", "corr-cleanup", "No coding", "synthetic"),
+            BrokenRuntime(), tmp_path,  # type: ignore[arg-type]
+        ))
 
 
 def test_approved_run_records_all_stages(tmp_path: Path) -> None:

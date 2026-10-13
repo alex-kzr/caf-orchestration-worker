@@ -9,6 +9,7 @@ from typing import Mapping, Protocol
 from uuid import UUID
 
 from caf_agent_runtime import SyntheticOutcome, SyntheticRuntime
+from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_control_api.storage import ClaimedRun
 
 from .workflow import RunRequest, run_baseline
@@ -63,6 +64,8 @@ async def run_synthetic_claim_once(
     try:
         artifact = (await run_baseline(request, runtime, workspace)).to_dict()
     except Exception as exc:
+        if isinstance(exc, ProcessTreeCleanupError):
+            raise
         artifact = {
             "status": "blocked", "reason": "worker_exception",
             "error_type": type(exc).__name__, "run_id": str(claim.id),

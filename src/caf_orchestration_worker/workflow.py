@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from caf_agent_runtime import AgentStatus, CodingAgentRuntime, CodingTask
+from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 
 
 def _now() -> str:
@@ -98,6 +99,8 @@ class WorkflowSession:
                 result.exit_code, result.session_id, result.changed_files, result.commits, usage,
             )
         except Exception as exc:
+            if isinstance(exc, ProcessTreeCleanupError):
+                raise
             # Exception details may contain CLI output, paths or credentials.
             item = StageArtifact(operation, task_id, "failed", "infrastructure", type(exc).__name__, {}, started, _now())
         self.artifact.stages.append(item)

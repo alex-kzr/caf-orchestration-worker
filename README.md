@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `74e43211c3a159cc0ad2c602cc6784bd40795fab` and `caf-control-api==0.1.0` at commit `39eae5d125707c67cdd60743c4d342fc984e79dd` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
+`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `1fbef1d5f2325d124c39fac256b11aa722a7c2e8` and `caf-control-api==0.1.0` at commit `3dc0fa331bf5b122b45f646f101a7ddce9631657` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
 
 ## Contract and boundaries
 
@@ -36,6 +36,36 @@ Unit tests cover identity propagation, stage order, allowlist rejection and lost
 ## Lease-aware dispatch boundary
 
 `queue_runner.dispatch_once` is the next, executor-neutral lifecycle slice. It quarantines expired claims without replay, claims at most one Run, polls the owner/cancel signal, renews the lease, cancels its executor task on request or lost ownership, and conditionally acknowledges one terminal artifact. Cleanup has a bounded wait and a lease margin; an unresponsive executor or `ProcessTreeCleanupError` leaves the Run unacknowledged. Unit tests cover duplicate polling, cancellation before and during execution, lost ownership, ACK races, a stubborn executor and unverified process cleanup. One bounded test passes a fake queue claim through dispatch into the actual process runtime using a local Python fixture; it does not use the coding CLIs or PostgreSQL. A separate dedicated PostgreSQL test covers one real claim/ACK and the empty second poll. This boundary is not wired into Compose or a host CLI process. Its executor must prove forced process-tree termination before it can run real coding tasks. An expired Run is marked `failed/orphan_unverified`, not automatically retried; the orphan may still exist.
+
+`python -m caf_orchestration_worker queue-synthetic-once --workspace /workspace`
+is a one-claim container entrypoint built on that same dispatcher. It verifies
+the **connected** database starts with `caf_queue_test_` before claiming, allows
+only the sample repository slug, uses `SyntheticRuntime`, and stores a labeled
+artifact. The umbrella's `p0-test` Compose profile runs it as a one-shot CAF
+service against a separately created test database. It cannot run coding CLIs
+and must not be treated as the production coding daemon.
+
+`python -m caf_orchestration_worker.p0_code_worker` is an opt-in, single-Run
+host experiment for the discount-code fixture. It requires
+`CAF_QUEUE_TEST_DATABASE_URL`, `CAF_SAMPLE_REPOSITORY`,
+`CAF_TEST_WORKTREE_ROOT` and `CAF_CODEX_EXECUTABLE`. It checks the connected
+test database, exact fixture prompt, sample base SHA and clean checkout before
+claiming. It creates
+an external worktree, permits only the fixture implementation file, invokes
+Codex once, runs both deterministic acceptance suites, asks Claude for a
+structured no-tools review, then stores the diff, verdict, gate results and
+local commit SHA in the Run artifact. The commit stays on a local branch; no
+push or merge occurs. An unverified process-tree cleanup leaves the claim
+unacknowledged and preserves the worktree for investigation. This fixture path
+is not a general production worker or a persistent daemon.
+
+For a failed fixture Run that already persisted a tested diff, a new test Run
+may use the exact prompt `CAF_REVIEW_SOURCE_RUN=<UUID>`. The worker verifies
+that source Run in the same test database, reapplies its recorded diff to a
+fresh worktree, reruns both suites and reviews with the full requirements in
+the prompt. It records `source_run_id` and `implementation.status` as
+`reused_verified_diff`; it does not ask Codex to regenerate code. The original
+failed Run remains terminal and is never replayed.
 
 ## Next validation steps
 
