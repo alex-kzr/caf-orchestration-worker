@@ -326,7 +326,7 @@ wheels = [
 [[package]]
 name = "caf-agent-runtime"
 version = "0.1.0"
-source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=1be45698ac9d36317d348d48b3c451521319e7f5#1be45698ac9d36317d348d48b3c451521319e7f5" }
+source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=7632e5224379d021a2c777cbd3ce8959c64f377c#7632e5224379d021a2c777cbd3ce8959c64f377c" }
 
 [[package]]
 name = "caf-orchestration-worker"
@@ -348,7 +348,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=1be45698ac9d36317d348d48b3c451521319e7f5" },
+    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=7632e5224379d021a2c777cbd3ce8959c64f377c" },
     { name = "crewai", marker = "extra == 'flow'", specifier = "==1.15.27" },
 ]
 provides-extras = ["flow"]
