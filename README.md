@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` from `https://github.com/alex-kzr/caf-agent-runtime` at commit `227e0cc0166fcf3c9bbdc8894ba483065a49836f`. `uv.lock` records the same exact revision. A fresh checkout needs network access to fetch this Git dependency unless uv already has it cached. The umbrella's adjacent runtime submodule remains useful for development, but the worker does not import from or install that sibling directory.
+`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` from `https://github.com/alex-kzr/caf-agent-runtime` at commit `1be45698ac9d36317d348d48b3c451521319e7f5`. `uv.lock` records the same exact revision. A fresh checkout needs network access to fetch this Git dependency unless uv already has it cached. The umbrella's adjacent runtime submodule remains useful for development, but the worker does not import from or install that sibling directory.
 
 ## Contract and boundaries
 

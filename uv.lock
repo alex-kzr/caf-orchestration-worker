@@ -2,9 +2,9 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
-    "python_full_version == '3.13.*'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*'",
     "python_full_version < '3.13' and sys_platform == 'win32'",
     "python_full_version < '3.13' and sys_platform != 'win32'",
 ]
@@ -326,7 +326,7 @@ wheels = [
 [[package]]
 name = "caf-agent-runtime"
 version = "0.1.0"
-source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=227e0cc0166fcf3c9bbdc8894ba483065a49836f#227e0cc0166fcf3c9bbdc8894ba483065a49836f" }
+source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=1be45698ac9d36317d348d48b3c451521319e7f5#1be45698ac9d36317d348d48b3c451521319e7f5" }
 
 [[package]]
 name = "caf-orchestration-worker"
@@ -348,7 +348,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=227e0cc0166fcf3c9bbdc8894ba483065a49836f" },
+    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=1be45698ac9d36317d348d48b3c451521319e7f5" },
     { name = "crewai", marker = "extra == 'flow'", specifier = "==1.15.27" },
 ]
 provides-extras = ["flow"]
