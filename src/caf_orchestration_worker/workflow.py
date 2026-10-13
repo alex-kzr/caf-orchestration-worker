@@ -1,4 +1,4 @@
-"""Sequential asyncio workflow; runtime execution belongs to caf-agent-runtime."""
+"""Shared sequential policy for the asyncio baseline and CrewAI Flow mode."""
 
 from __future__ import annotations
 
@@ -68,26 +68,29 @@ class RunArtifact:
         return asdict(self)
 
 
-async def run_baseline(
-    request: RunRequest, runtime: CodingAgentRuntime, workspace: Path
-) -> RunArtifact:
-    """Execute the P0 synthetic stage contract without claiming Git or CLI effects."""
-    if not workspace.is_dir():
-        raise ValueError("workspace must be an existing directory")
-    artifact = RunArtifact(request.run_id, request.correlation_id, "asyncio-baseline", "running", None, 0, _now(), request.base_revision)
+class WorkflowSession:
+    """Shared runtime calls and bounded policy; Flow controls stage sequencing."""
 
-    async def stage(operation: str, prompt: str | None = None) -> StageArtifact:
-        task_id = f"{request.run_id}:{len(artifact.stages) + 1}:{operation}"
-        task = CodingTask(task_id, request.correlation_id, prompt or request.prompt, request.provider, operation)
+    def __init__(self, request: RunRequest, runtime: CodingAgentRuntime, workspace: Path, mode: str) -> None:
+        if not workspace.is_dir():
+            raise ValueError("workspace must be an existing directory")
+        self.request = request
+        self.runtime = runtime
+        self.workspace = workspace
+        self.artifact = RunArtifact(request.run_id, request.correlation_id, mode, "running", None, 0, _now(), request.base_revision)
+
+    async def stage(self, operation: str, prompt: str | None = None) -> StageArtifact:
+        task_id = f"{self.request.run_id}:{len(self.artifact.stages) + 1}:{operation}"
+        task = CodingTask(task_id, self.request.correlation_id, prompt or self.request.prompt, self.request.provider, operation)
         started = _now()
         try:
-            result = await runtime.execute(task, workspace)
-            if result.run_id != task_id or result.correlation_id != request.correlation_id:
+            result = await self.runtime.execute(task, self.workspace)
+            if result.run_id != task_id or result.correlation_id != self.request.correlation_id:
                 raise ValueError("runtime returned mismatched identity")
             output = dict(result.output)
             usage = dict(result.usage) if result.usage is not None else None
             events = tuple(asdict(event) for event in result.events)
-            json.dumps((output, usage, events))  # Persisted artifacts must be JSON-compatible.
+            json.dumps((output, usage, events))
             item = StageArtifact(
                 operation, task_id, result.status.value,
                 result.failure_class.value if result.failure_class else None,
@@ -97,50 +100,70 @@ async def run_baseline(
         except Exception as exc:
             # Exception details may contain CLI output, paths or credentials.
             item = StageArtifact(operation, task_id, "failed", "infrastructure", type(exc).__name__, {}, started, _now())
-        artifact.stages.append(item)
+        self.artifact.stages.append(item)
         return item
 
-    def finish(status: str, reason: str | None = None) -> RunArtifact:
-        artifact.status = status
-        artifact.reason = reason
-        artifact.ended_at = _now()
-        return artifact
+    def finish(self, status: str, reason: str | None = None) -> RunArtifact:
+        self.artifact.status = status
+        self.artifact.reason = reason
+        self.artifact.ended_at = _now()
+        return self.artifact
 
-    for operation in ("plan", "implement"):
-        item = await stage(operation)
+    async def plan(self) -> RunArtifact:
+        item = await self.stage("plan")
         if item.status != AgentStatus.SUCCEEDED.value:
-            return finish("blocked", f"{operation}_{item.failure_class or item.status}")
+            self.finish("blocked", f"plan_{item.failure_class or item.status}")
+        return self.artifact
 
-    while True:
-        review = await stage("review")
-        if review.status != AgentStatus.SUCCEEDED.value:
-            return finish("blocked", f"review_{review.failure_class or review.status}")
-        approved = review.output.get("approved")
-        if not isinstance(approved, bool):
-            return finish("blocked", "invalid_review_output")
-        if approved:
-            test = await stage("test")
-            if test.status != AgentStatus.SUCCEEDED.value:
-                if test.failure_class == "quality_gate":
-                    failure = "test_failed"
+    async def implement(self) -> RunArtifact:
+        if self.artifact.status != "running":
+            return self.artifact
+        item = await self.stage("implement")
+        if item.status != AgentStatus.SUCCEEDED.value:
+            self.finish("blocked", f"implement_{item.failure_class or item.status}")
+        return self.artifact
+
+    async def evaluate(self) -> RunArtifact:
+        if self.artifact.status != "running":
+            return self.artifact
+        while True:
+            review = await self.stage("review")
+            if review.status != AgentStatus.SUCCEEDED.value:
+                return self.finish("blocked", f"review_{review.failure_class or review.status}")
+            approved = review.output.get("approved")
+            if not isinstance(approved, bool):
+                return self.finish("blocked", "invalid_review_output")
+            if approved:
+                test = await self.stage("test")
+                if test.status != AgentStatus.SUCCEEDED.value:
+                    if test.failure_class == "quality_gate":
+                        failure = "test_failed"
+                    else:
+                        return self.finish("blocked", f"test_{test.failure_class or test.status}")
+                elif not isinstance(test.output.get("passed"), bool):
+                    return self.finish("blocked", "invalid_test_output")
+                elif test.output["passed"]:
+                    return self.finish("succeeded")
                 else:
-                    return finish("blocked", f"test_{test.failure_class or test.status}")
-            elif not isinstance(test.output.get("passed"), bool):
-                return finish("blocked", "invalid_test_output")
-            elif test.output["passed"]:
-                return finish("succeeded")
+                    failure = "test_failed"
             else:
-                failure = "test_failed"
-        else:
-            failure = "review_rejected"
-        if artifact.iterations >= request.max_corrections:
-            return finish("blocked", failure)
-        evidence = review.output if failure == "review_rejected" else test.output
-        correction_prompt = f"{request.prompt}\n\nCorrect the {failure} using this structured evidence: {json.dumps(evidence)}"
-        correction = await stage("correct", correction_prompt)
-        artifact.iterations += 1
-        if correction.status != AgentStatus.SUCCEEDED.value:
-            return finish("blocked", f"correct_{correction.failure_class or correction.status}")
+                failure = "review_rejected"
+            if self.artifact.iterations >= self.request.max_corrections:
+                return self.finish("blocked", failure)
+            evidence = review.output if failure == "review_rejected" else test.output
+            correction_prompt = f"{self.request.prompt}\n\nCorrect the {failure} using this structured evidence: {json.dumps(evidence)}"
+            correction = await self.stage("correct", correction_prompt)
+            self.artifact.iterations += 1
+            if correction.status != AgentStatus.SUCCEEDED.value:
+                return self.finish("blocked", f"correct_{correction.failure_class or correction.status}")
+
+
+async def run_baseline(request: RunRequest, runtime: CodingAgentRuntime, workspace: Path) -> RunArtifact:
+    """Plain asyncio mode C using the same stage policy as Mode B."""
+    session = WorkflowSession(request, runtime, workspace, "asyncio-baseline")
+    await session.plan()
+    await session.implement()
+    return await session.evaluate()
 
 
 def write_artifact(artifact: RunArtifact, path: Path) -> None:
