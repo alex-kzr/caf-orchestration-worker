@@ -1,10 +1,13 @@
 import asyncio
+import sys
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
 from caf_control_api.storage import ClaimedRun
 from caf_agent_runtime.windows_job import ProcessTreeCleanupError
+from caf_agent_runtime import CodexRuntime, CodingTask
 from caf_orchestration_worker.queue_runner import CleanupTimeout, LostLeaseError, dispatch_once
 
 
@@ -187,3 +190,22 @@ def test_unverified_process_cleanup_leaves_claim_unacknowledged():
     with pytest.raises(ProcessTreeCleanupError):
         asyncio.run(dispatch_once(store, "worker-12345", execute, tick_seconds=.01))
     assert store.completed is None
+
+
+def test_one_claim_through_real_process_runtime_without_coding_cli(tmp_path: Path):
+    store = FakeStore()
+    script = tmp_path / "fixture.py"
+    script.write_text("print('fixture complete')\n", encoding="utf-8")
+    runtime = CodexRuntime(executable=Path(sys.executable), timeout_seconds=10)
+    runtime.command = lambda _: (sys.executable, str(script))  # type: ignore[method-assign]
+
+    async def execute(run):
+        result = await runtime.execute(CodingTask(
+            str(run.id), str(run.correlation_id), "No coding", "codex",
+        ), tmp_path)
+        return {"status": result.status.value, "execution_kind": "local-process-fixture"}
+
+    artifact = asyncio.run(dispatch_once(store, "worker-12345", execute, tick_seconds=.01))
+    assert artifact == {"status": "succeeded", "execution_kind": "local-process-fixture"}
+    assert store.completed == ("succeeded", artifact)
+    assert store.renewals >= 1
