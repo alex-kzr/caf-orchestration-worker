@@ -9,6 +9,7 @@ from typing import Protocol
 from uuid import UUID
 
 from caf_control_api.storage import ClaimedRun
+from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 
 
 class QueueStore(Protocol):
@@ -94,6 +95,10 @@ async def dispatch_once(
                         json.dumps(artifact)
                         terminal = "succeeded" if artifact.get("status") == "succeeded" else "failed"
                     except Exception as exc:
+                        if isinstance(exc, ProcessTreeCleanupError):
+                            # A live orphan may still be editing the workspace.
+                            # Let the lease expire into quarantine; never ACK it.
+                            raise
                         artifact = {"reason": "executor_exception", "error_type": type(exc).__name__}
                         terminal = "failed"
                     break

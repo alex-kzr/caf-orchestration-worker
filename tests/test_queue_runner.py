@@ -4,6 +4,7 @@ from uuid import uuid4
 import pytest
 
 from caf_control_api.storage import ClaimedRun
+from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_orchestration_worker.queue_runner import CleanupTimeout, LostLeaseError, dispatch_once
 
 
@@ -175,3 +176,14 @@ def test_cleanup_parameters_leave_lease_margin():
         asyncio.run(dispatch_once(store, "worker-12345", execute,
                                   lease_seconds=15, tick_seconds=4, cleanup_seconds=9))
     assert store.queued is True
+
+
+def test_unverified_process_cleanup_leaves_claim_unacknowledged():
+    store = FakeStore()
+
+    async def execute(_):
+        raise ProcessTreeCleanupError("unverified orphan")
+
+    with pytest.raises(ProcessTreeCleanupError):
+        asyncio.run(dispatch_once(store, "worker-12345", execute, tick_seconds=.01))
+    assert store.completed is None
