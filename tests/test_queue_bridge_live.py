@@ -11,10 +11,50 @@ from uuid import uuid4
 from caf_control_api.models import CreateTask
 from caf_control_api.storage import PostgresStore
 from caf_orchestration_worker.queue_proof import run_synthetic_claim_once
+from caf_orchestration_worker.queue_runner import dispatch_once
 
 
 @unittest.skipUnless(os.getenv("CAF_QUEUE_TEST_LIVE") == "1", "live database opt-in required")
 class LiveQueueBridgeTest(unittest.TestCase):
+    def test_dispatch_once_ack_and_idempotent_empty_queue(self):
+        dsn = os.environ["CAF_QUEUE_TEST_DATABASE_URL"]
+        expected = urlparse(dsn).path.lstrip("/")
+        if not expected.startswith("caf_queue_test_"):
+            raise ValueError("a dedicated caf_queue_test_* database is required")
+        store = PostgresStore(dsn)
+        store.open()
+        run = None
+        try:
+            self.assertEqual(store.database_name(), expected)
+            with store.pool.connection() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM runs").fetchone()[0], 0)
+            task = CreateTask(
+                target_repository="caf-sample-app", base_revision="a" * 40,
+                prompt="Lease-aware dispatch test; no CLI",
+                acceptance_criteria=["Single ACK"], provider="codex",
+            )
+            run = store.submit(task, f"dispatch-test-{uuid4().hex}")
+            calls = []
+
+            async def execute(claim):
+                calls.append(claim.id)
+                return {"status": "succeeded", "kind": "dispatch-test"}
+
+            owner = f"worker-{uuid4().hex}"
+            artifact = asyncio.run(dispatch_once(store, owner, execute, tick_seconds=.01))
+            self.assertEqual(artifact["kind"], "dispatch-test")
+            self.assertEqual(store.get_run(run.run_id).status, "succeeded")
+            self.assertEqual(store.get_run(run.run_id).attempt, 1)
+            self.assertEqual(calls, [run.run_id])
+            self.assertIsNone(asyncio.run(dispatch_once(store, owner, execute, tick_seconds=.01)))
+            self.assertEqual(calls, [run.run_id])
+        finally:
+            if run is not None:
+                with store.pool.connection() as conn, conn.transaction():
+                    conn.execute("DELETE FROM runs WHERE id = %s", (run.run_id,))
+                    conn.execute("DELETE FROM tasks WHERE id = %s", (run.task_id,))
+            store.close()
+
     def test_one_synthetic_run_is_persisted(self):
         dsn = os.environ["CAF_QUEUE_TEST_DATABASE_URL"]
         expected = urlparse(dsn).path.lstrip("/")
