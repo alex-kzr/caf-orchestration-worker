@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `1fbef1d5f2325d124c39fac256b11aa722a7c2e8` and `caf-control-api==0.1.0` at commit `8a3f442857a2cf8abdb11928a805a70cfa1b1146` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
+`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `c25a190729140953f77c02d80b0d5abb60577863` and `caf-control-api==0.1.0` at commit `e46c34d8a49affcaab6f61c27178f99c4661345d` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
 
 ## Contract and boundaries
 
@@ -69,12 +69,23 @@ failed Run remains terminal and is never replayed.
 
 `WorkerAPIStore` is a narrow alternative queue transport for a host worker.
 It accepts only an explicit `http://127.0.0.1:<port>` control API, disables
-redirects, uses a distinct scoped `CAF_WORKER_TOKEN` and never sends the token
+proxies and redirects, uses a distinct scoped `CAF_WORKER_TOKEN` and never sends the token
 in a URL. The host fixture selects it only when `CAF_WORKER_API_URL` and
 `CAF_WORKER_TOKEN` are set; otherwise it uses the direct isolated PostgreSQL
 test URL. Both paths verify the connected database begins with
 `caf_queue_test_` before any claim. No live worker token has been issued, and
 no persistent host API worker is started by normal commands.
+
+The API grant is now bound to one Run/task, repository, workspace ID, base
+revision, provider, worker identity, exact test database and an expiry no
+later than one hour after configuration. The fixture accepts HTTP claims only
+for workspace ID `caf-sample-fixture-v1`; its configured sample path and
+external worktree root still need local checks. CLI, Git and acceptance test
+subprocesses receive a minimal environment containing OS lookup and standard
+provider config paths, not the worker token or model API keys. Real CLI login
+has not been retested after this environment change. The new
+`p0_synthetic_http` entrypoint is an opt-in **one-shot synthetic** HTTP client
+for workspace ID `caf-synthetic-v1`; it invokes no coding CLI.
 
 `caf_orchestration_worker.synthetic_daemon` is a persistent **test-only**
 polling loop. The umbrella's `p0-test-daemon` profile gives it an isolated

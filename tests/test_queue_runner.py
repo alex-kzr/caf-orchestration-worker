@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -11,6 +12,7 @@ from caf_agent_runtime import CodexRuntime, CodingTask
 from caf_orchestration_worker.queue_runner import CleanupTimeout, LostLeaseError, dispatch_once
 from caf_orchestration_worker.bounded_worker import run_one_synthetic
 from caf_orchestration_worker.synthetic_daemon import serve
+from caf_orchestration_worker.api_store import WorkerAPIStore
 
 
 def claim():
@@ -50,6 +52,18 @@ class FakeStore:
             return False
         self.completed = status, artifact
         return True
+
+
+def test_http_synthetic_rejects_other_workspace_before_execution(tmp_path):
+    class FakeHTTPStore(FakeStore, WorkerAPIStore):
+        def database_name(self):
+            return "caf_queue_test_unit"
+
+    store = FakeHTTPStore()
+    store.run = replace(store.run, workspace_id="wrong-workspace")
+    artifact = asyncio.run(run_one_synthetic(store, "worker-12345", tmp_path))
+    assert artifact == {"status": "blocked", "reason": "workspace_scope_mismatch"}
+    assert store.completed == ("failed", artifact)
 
 
 def test_success_ack_is_idempotent_at_claim_boundary():

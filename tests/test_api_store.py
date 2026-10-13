@@ -44,6 +44,7 @@ def test_worker_transport_parses_claim_and_fails_closed_on_bad_response():
     run_id, task_id, correlation_id = uuid4(), uuid4(), uuid4()
     claim = {"id": str(run_id), "task_id": str(task_id),
              "correlation_id": str(correlation_id), "target_repository": "caf-sample-app",
+             "workspace_id": "caf-sample-fixture-v1",
              "base_revision": "a" * 40, "prompt": "fixture", "acceptance_criteria": ["pass"],
              "provider": "codex", "max_corrections": 0, "attempt": 1}
 
@@ -55,7 +56,8 @@ def test_worker_transport_parses_claim_and_fails_closed_on_bad_response():
             return Response(json.dumps(self.payload).encode())
 
     store._opener = Opener(claim)
-    assert store.claim_queued("worker-12345").id == run_id
+    parsed = store.claim_queued("worker-12345")
+    assert parsed.id == run_id and parsed.workspace_id == "caf-sample-fixture-v1"
     store._opener = Opener({"invalid": True})
     with pytest.raises(WorkerTransportError, match="invalid queue claim"):
         store.claim_queued("worker-12345")

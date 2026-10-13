@@ -8,12 +8,13 @@ from pathlib import Path
 from caf_agent_runtime import SyntheticOutcome, SyntheticRuntime
 from caf_control_api.storage import ClaimedRun, PostgresStore
 
+from .api_store import WorkerAPIStore
 from .queue_runner import dispatch_once
 from .workflow import RunRequest, run_baseline
 
 
 async def run_one_synthetic(
-    store: PostgresStore, owner: str, workspace: Path,
+    store: PostgresStore | WorkerAPIStore, owner: str, workspace: Path,
 ) -> dict | None:
     """Use only an isolated test database; never consume the shared CAF queue."""
     database_name = await asyncio.to_thread(store.database_name)
@@ -23,6 +24,8 @@ async def run_one_synthetic(
         raise ValueError("workspace must exist")
 
     async def execute(claim: ClaimedRun) -> dict:
+        if isinstance(store, WorkerAPIStore) and claim.workspace_id != "caf-synthetic-v1":
+            return {"status": "blocked", "reason": "workspace_scope_mismatch"}
         if claim.target_repository != "caf-sample-app":
             return {"status": "blocked", "reason": "repository_not_allowed"}
         if claim.prompt == "CAF_SYNTHETIC_DELAY_3_SECONDS":

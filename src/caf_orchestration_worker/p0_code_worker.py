@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from caf_agent_runtime import AgentStatus, ClaudeRuntime, CodexRuntime, CodingTask
+from caf_agent_runtime import AgentStatus, ClaudeRuntime, CodexRuntime, CodingTask, child_environment
 from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_control_api.storage import ClaimedRun, PostgresStore
 
@@ -62,12 +62,12 @@ def _review_verdict(value: object) -> dict | None:
 def _git(repository: Path, *args: str, timeout: int = 20) -> str:
     return subprocess.run(
         ["git", "-C", str(repository), *args], check=True,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, env=child_environment(),
     ).stdout.rstrip("\r\n")
 
 
 def _gate(workspace: Path, filename: str) -> dict:
-    env = {**os.environ, "PYTHONPATH": str(workspace / "src")}
+    env = {**child_environment(), "PYTHONPATH": str(workspace / "src")}
     completed = subprocess.run(
         ["python", "-m", "unittest", "discover", "-s", "tests", "-p", filename],
         cwd=workspace, env=env, capture_output=True, text=True, timeout=30,
@@ -95,6 +95,8 @@ async def run_one_code_fixture(
     worktree_root.mkdir(parents=True, exist_ok=True)
 
     async def execute(claim: ClaimedRun) -> dict:
+        if isinstance(store, WorkerAPIStore) and claim.workspace_id != "caf-sample-fixture-v1":
+            return {"status": "blocked", "reason": "workspace_scope_mismatch"}
         if (claim.target_repository != "caf-sample-app" or claim.provider != "codex"
                 or claim.base_revision != BASE_REVISION or claim.max_corrections != 0):
             return {"status": "blocked", "reason": "fixture_claim_mismatch"}
@@ -129,7 +131,7 @@ async def run_one_code_fixture(
                 applied = subprocess.run(
                     ["git", "-C", str(workspace), "apply", "--", "-"],
                     input=source_diff + "\n", capture_output=True, text=True,
-                    timeout=20,
+                    timeout=20, env=child_environment(),
                 )
                 if applied.returncode != 0:
                     artifact["reason"] = "source_diff_failed_to_apply"

@@ -71,7 +71,7 @@ class WorkerAPIStore:
                 UUID(value["id"]), UUID(value["task_id"]), UUID(value["correlation_id"]),
                 value["target_repository"], value["base_revision"], value["prompt"],
                 value["acceptance_criteria"], value["provider"],
-                value["max_corrections"], value["attempt"],
+                value["max_corrections"], value["attempt"], value["workspace_id"],
             )
         except (KeyError, TypeError, ValueError):
             raise WorkerTransportError("invalid queue claim response") from None
