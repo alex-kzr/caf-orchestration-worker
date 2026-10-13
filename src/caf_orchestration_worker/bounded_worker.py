@@ -11,10 +11,12 @@ from caf_control_api.storage import ClaimedRun, PostgresStore
 from .api_store import WorkerAPIStore
 from .queue_runner import dispatch_once
 from .workflow import RunRequest, run_baseline
+from .workspace_binding import WorkspaceBinding
 
 
 async def run_one_synthetic(
     store: PostgresStore | WorkerAPIStore, owner: str, workspace: Path,
+    *, binding: WorkspaceBinding | None = None,
 ) -> dict | None:
     """Use only an isolated test database; never consume the shared CAF queue."""
     database_name = await asyncio.to_thread(store.database_name)
@@ -22,9 +24,19 @@ async def run_one_synthetic(
         raise ValueError("synthetic worker requires a caf_queue_test_* database")
     if not workspace.is_dir():
         raise ValueError("workspace must exist")
+    if isinstance(store, WorkerAPIStore) and (
+        binding is None or binding.workspace_id != "caf-synthetic-v1"
+        or workspace.resolve(strict=True) != binding.repository.resolve(strict=True)
+    ):
+        raise ValueError("synthetic HTTP worker requires exact CAF workspace binding")
 
     async def execute(claim: ClaimedRun) -> dict:
-        if isinstance(store, WorkerAPIStore) and claim.workspace_id != "caf-synthetic-v1":
+        if isinstance(store, WorkerAPIStore) and (
+            claim.workspace_id != binding.workspace_id
+            or claim.target_repository != binding.repository_slug
+            or claim.base_revision != binding.base_revision
+            or claim.provider != "codex"
+        ):
             return {"status": "blocked", "reason": "workspace_scope_mismatch"}
         if claim.target_repository != "caf-sample-app":
             return {"status": "blocked", "reason": "repository_not_allowed"}

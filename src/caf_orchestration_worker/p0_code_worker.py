@@ -9,8 +9,9 @@ import asyncio
 import json
 import os
 import subprocess
+import tempfile
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from caf_agent_runtime import AgentStatus, ClaudeRuntime, CodexRuntime, CodingTask, child_environment
 from caf_agent_runtime.windows_job import ProcessTreeCleanupError
@@ -18,9 +19,10 @@ from caf_control_api.storage import ClaimedRun, PostgresStore
 
 from .api_store import WorkerAPIStore
 from .queue_runner import dispatch_once
+from .workspace_binding import WorkspaceBinding, SAMPLE_BASE_REVISION, resolve_sample_workspace
 
 
-BASE_REVISION = "e12f4d8293ea0dd8a5e18c3006af803c4d429b56"
+BASE_REVISION = SAMPLE_BASE_REVISION
 ALLOWED_FILE = "src/caf_sample/orders.py"
 FIXTURE_PROMPT = (
     "Add an optional discount_code: str | None = None argument to "
@@ -77,37 +79,54 @@ def _gate(workspace: Path, filename: str) -> dict:
 
 
 async def run_one_code_fixture(
-    store: PostgresStore | WorkerAPIStore, owner: str, repository: Path, worktree_root: Path,
+    store: PostgresStore | WorkerAPIStore, owner: str, binding: WorkspaceBinding,
     codex_executable: Path,
 ) -> dict | None:
     """Claim once from a test DB and persist diff, gates and Claude verdict."""
+    if (binding.workspace_id != "caf-sample-fixture-v1"
+            or binding.repository_slug != "caf-sample-app"
+            or binding.base_revision != BASE_REVISION
+            or binding.worktree_root is None):
+        raise ValueError("code fixture requires the exact CAF sample binding")
+    repository, worktree_root = binding.repository, binding.worktree_root
     database_name = await asyncio.to_thread(store.database_name)
     if not database_name.startswith("caf_queue_test_"):
         raise ValueError("code fixture requires a caf_queue_test_* database")
-    if worktree_root.resolve().is_relative_to(repository.resolve()):
-        raise ValueError("worktrees must be outside the sample repository")
+    umbrella_root = repository.parent.parent.resolve(strict=True)
+    resolved_temp_root = worktree_root.resolve(strict=True)
+    if (worktree_root.is_symlink() or worktree_root.is_junction()
+            or not resolved_temp_root.is_dir()
+            or resolved_temp_root.is_relative_to(umbrella_root)):
+        raise ValueError("worktrees must be outside the CAF checkout")
     if _git(repository, "rev-parse", "HEAD") != BASE_REVISION:
         raise ValueError("sample repository must be checked out at the fixture base")
     if _git(repository, "status", "--porcelain"):
         raise ValueError("sample repository must be clean")
     if not codex_executable.is_absolute() or not codex_executable.is_file():
         raise ValueError("Codex native executable must exist at an absolute path")
-    worktree_root.mkdir(parents=True, exist_ok=True)
+    private_root = Path(tempfile.mkdtemp(prefix="caf-p0-", dir=resolved_temp_root))
+    if (private_root.is_symlink() or private_root.is_junction()
+            or private_root.resolve(strict=True).parent != resolved_temp_root
+            or private_root.is_relative_to(umbrella_root)
+            or umbrella_root.is_relative_to(private_root)):
+        raise ValueError("private worktree root was redirected")
 
     async def execute(claim: ClaimedRun) -> dict:
-        if isinstance(store, WorkerAPIStore) and claim.workspace_id != "caf-sample-fixture-v1":
+        if claim.workspace_id != binding.workspace_id:
             return {"status": "blocked", "reason": "workspace_scope_mismatch"}
-        if (claim.target_repository != "caf-sample-app" or claim.provider != "codex"
-                or claim.base_revision != BASE_REVISION or claim.max_corrections != 0):
+        if (claim.target_repository != binding.repository_slug or claim.provider != "codex"
+                or claim.base_revision != binding.base_revision or claim.max_corrections != 0):
             return {"status": "blocked", "reason": "fixture_claim_mismatch"}
         if not (claim.prompt == FIXTURE_PROMPT
                 or claim.prompt.startswith("CAF_REVIEW_SOURCE_RUN=")):
             return {"status": "blocked", "reason": "fixture_prompt_mismatch"}
         branch = f"caf-queue-experiment-{claim.id.hex[:12]}"
-        workspace = worktree_root / str(claim.id)
+        workspace = private_root / str(claim.id)
         source_run_id: UUID | None = None
         source_diff: str | None = None
         if claim.prompt.startswith("CAF_REVIEW_SOURCE_RUN="):
+            if isinstance(store, WorkerAPIStore):
+                return {"status": "blocked", "reason": "source_run_out_of_scope"}
             source_run_id = UUID(claim.prompt.removeprefix("CAF_REVIEW_SOURCE_RUN="))
             source = await asyncio.to_thread(store.get_run, source_run_id)
             source_artifact = source.artifact if source is not None else None
@@ -212,29 +231,25 @@ async def run_one_code_fixture(
             if not cleanup_unverified:
                 _git(repository, "worktree", "remove", "--force", str(workspace))
 
-    return await dispatch_once(store, owner, execute, lease_seconds=600,
-                               tick_seconds=5, cleanup_seconds=15)
+    try:
+        return await dispatch_once(store, owner, execute, lease_seconds=600,
+                                   tick_seconds=5, cleanup_seconds=15)
+    finally:
+        try:
+            private_root.rmdir()  # Preserve a nonempty root if cleanup was unverified.
+        except OSError:
+            pass
 
 
 def main() -> int:
-    """Use explicit env only for the isolated, one-shot local experiment."""
-    if os.getenv("CAF_WORKER_API_URL"):
-        store: PostgresStore | WorkerAPIStore = WorkerAPIStore(
-            os.environ["CAF_WORKER_API_URL"], os.environ["CAF_WORKER_TOKEN"],
-        )
-    else:
-        store = PostgresStore(os.environ["CAF_QUEUE_TEST_DATABASE_URL"])
-        store.open()
-    try:
-        result = asyncio.run(run_one_code_fixture(
-            store, f"worker-{uuid4().hex}",
-            Path(os.environ["CAF_SAMPLE_REPOSITORY"]),
-            Path(os.environ["CAF_TEST_WORKTREE_ROOT"]),
-            Path(os.environ["CAF_CODEX_EXECUTABLE"]),
-        ))
-    finally:
-        if isinstance(store, PostgresStore):
-            store.close()
+    """Require an exact HTTP grant and CAF workspace binding for this fixture."""
+    binding = resolve_sample_workspace(Path(os.environ["CAF_UMBRELLA_ROOT"]),
+                                       "caf-sample-fixture-v1")
+    store = WorkerAPIStore(os.environ["CAF_WORKER_API_URL"], os.environ["CAF_WORKER_TOKEN"])
+    result = asyncio.run(run_one_code_fixture(
+        store, os.environ["CAF_WORKER_ID"], binding,
+        Path(os.environ["CAF_CODEX_EXECUTABLE"]),
+    ))
     print("empty" if result is None else f"{result.get('execution_kind')}: {result['status']}")
     return 0 if result is None or result["status"] == "succeeded" else 1
 

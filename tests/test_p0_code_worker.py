@@ -6,9 +6,13 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from caf_control_api.storage import ClaimedRun
 from caf_orchestration_worker import p0_code_worker
+from caf_orchestration_worker.api_store import WorkerAPIStore
 from caf_orchestration_worker.p0_code_worker import _git, _review_verdict
+from caf_orchestration_worker.workspace_binding import WorkspaceBinding
 
 
 def test_git_preserves_porcelain_status_prefix(tmp_path: Path) -> None:
@@ -30,8 +34,14 @@ def test_review_parser_accepts_json_wrapping_but_rejects_missing_verdict() -> No
     assert _review_verdict('{"approved":"yes","findings":[]}') is None
 
 
-def test_real_cli_fixture_rejects_arbitrary_prompt_before_launch(tmp_path: Path, monkeypatch) -> None:
-    class Store:
+@pytest.mark.parametrize(("prompt", "reason"), [
+    ("arbitrary command", "fixture_prompt_mismatch"),
+    (f"CAF_REVIEW_SOURCE_RUN={uuid4()}", "source_run_out_of_scope"),
+])
+def test_real_cli_fixture_rejects_unscoped_prompt_before_launch(
+    tmp_path: Path, monkeypatch, prompt: str, reason: str,
+) -> None:
+    class Store(WorkerAPIStore):
         def __init__(self):
             self.claimed = False
             self.completed = None
@@ -47,8 +57,11 @@ def test_real_cli_fixture_rejects_arbitrary_prompt_before_launch(tmp_path: Path,
                 return None
             self.claimed = True
             return ClaimedRun(uuid4(), uuid4(), uuid4(), "caf-sample-app",
-                              p0_code_worker.BASE_REVISION, "arbitrary command", [],
-                              "codex", 0, 1)
+                              p0_code_worker.BASE_REVISION, prompt, [],
+                              "codex", 0, 1, "caf-sample-fixture-v1")
+
+        def get_run(self, run_id):
+            raise AssertionError("HTTP grant cannot read a foreign Run")
 
         def claim_control(self, run_id, owner):
             return True, False
@@ -60,14 +73,17 @@ def test_real_cli_fixture_rejects_arbitrary_prompt_before_launch(tmp_path: Path,
             self.completed = status, artifact
             return True
 
-    repository = tmp_path / "repo"
-    repository.mkdir()
+    repository = tmp_path / "caf" / "repositories" / "repo"
+    repository.mkdir(parents=True)
+    (tmp_path / "worktrees").mkdir()
     monkeypatch.setattr(p0_code_worker, "_git", lambda _, *args:
                         p0_code_worker.BASE_REVISION if args == ("rev-parse", "HEAD") else "")
     store = Store()
+    binding = WorkspaceBinding("caf-sample-fixture-v1", "caf-sample-app", repository,
+                               p0_code_worker.BASE_REVISION, tmp_path / "worktrees")
     result = asyncio.run(p0_code_worker.run_one_code_fixture(
-        store, "worker-12345", repository, tmp_path / "worktrees",
+        store, "worker-12345", binding,
         Path(sys.executable),  # type: ignore[arg-type]
     ))
-    assert result == {"status": "blocked", "reason": "fixture_prompt_mismatch"}
+    assert result == {"status": "blocked", "reason": reason}
     assert store.completed == ("failed", result)

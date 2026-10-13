@@ -47,10 +47,15 @@ and must not be treated as the production coding daemon.
 
 `python -m caf_orchestration_worker.p0_code_worker` is an opt-in, single-Run
 host experiment for the discount-code fixture. It requires
-`CAF_QUEUE_TEST_DATABASE_URL`, `CAF_SAMPLE_REPOSITORY`,
-`CAF_TEST_WORKTREE_ROOT` and `CAF_CODEX_EXECUTABLE`. It checks the connected
-test database, exact fixture prompt, sample base SHA and clean checkout before
-claiming. It creates an external worktree, permits only the fixture
+`CAF_UMBRELLA_ROOT`, `CAF_WORKER_API_URL`, `CAF_WORKER_TOKEN`,
+`CAF_WORKER_ID` and `CAF_CODEX_EXECUTABLE`. The entrypoint no longer falls
+back to direct PostgreSQL. It maps `caf-sample-fixture-v1` to the exact
+`repositories/caf-sample-app` checkout under the supplied CAF umbrella,
+rejects redirected checkouts and temporary roots, and creates a private
+`caf-p0-*` worktree directory under the host temporary directory for each
+invocation. It checks the connected test database,
+exact fixture prompt, sample base SHA and clean checkout before claiming. It
+creates an external worktree, permits only the fixture
 implementation file, invokes
 Codex once, runs both deterministic acceptance suites, asks Claude for a
 structured no-tools review, then stores the diff, verdict, gate results and
@@ -59,34 +64,39 @@ push or merge occurs. An unverified process-tree cleanup leaves the claim
 unacknowledged and preserves the worktree for investigation. This fixture path
 is not a general production worker or a persistent daemon.
 
-For a failed fixture Run that already persisted a tested diff, a new test Run
-may use the exact prompt `CAF_REVIEW_SOURCE_RUN=<UUID>`. The worker verifies
-that source Run in the same test database, reapplies its recorded diff to a
-fresh worktree, reruns both suites and reviews with the full requirements in
-the prompt. It records `source_run_id` and `implementation.status` as
-`reused_verified_diff`; it does not ask Codex to regenerate code. The original
-failed Run remains terminal and is never replayed.
+The earlier direct-database experiment used
+`CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.
+The current one-Run HTTP grant cannot read a different source Run, so that
+continuation is unavailable through the new entrypoint and explicitly fails
+closed before a foreign read.
+No automatic replay is enabled.
 
 `WorkerAPIStore` is a narrow alternative queue transport for a host worker.
 It accepts only an explicit `http://127.0.0.1:<port>` control API, disables
 proxies and redirects, uses a distinct scoped `CAF_WORKER_TOKEN` and never sends the token
-in a URL. The host fixture selects it only when `CAF_WORKER_API_URL` and
-`CAF_WORKER_TOKEN` are set; otherwise it uses the direct isolated PostgreSQL
-test URL. Both paths verify the connected database begins with
-`caf_queue_test_` before any claim. One approved temporary token was used for
+in a URL. The host fixture requires this transport and verifies the connected
+database begins with `caf_queue_test_` before any claim. One approved temporary token was used for
 a single synthetic HTTP Run and then removed; no persistent host API worker
 is started by normal commands.
 
 The API grant is now bound to one Run/task, repository, workspace ID, base
 revision, provider, worker identity, exact test database and an expiry no
 later than one hour after configuration. The fixture accepts HTTP claims only
-for workspace ID `caf-sample-fixture-v1`; its configured sample path and
-external worktree root still need local checks. CLI, Git and acceptance test
+for workspace ID `caf-sample-fixture-v1`; its repository is derived from the
+CAF umbrella path and its private worktree root from the host temp directory. CLI, Git and acceptance test
 subprocesses receive a minimal environment containing OS lookup and standard
 provider config paths, not the worker token or model API keys. Real CLI login
 has not been retested after this environment change. The new
 `p0_synthetic_http` entrypoint is an opt-in **one-shot synthetic** HTTP client
-for workspace ID `caf-synthetic-v1`; it invokes no coding CLI.
+for workspace ID `caf-synthetic-v1`; it requires `CAF_UMBRELLA_ROOT` and maps
+the ID to the same checked CAF sample checkout. It invokes no coding CLI.
+
+An offline Windows test used a local dummy-token HTTP API, a separate worker
+process and a disposable Python child in the real runtime adapter. Killing
+only the worker stopped the child through Job Object closure; after test-only
+lease expiry, the API-side state was quarantined and no claim replay occurred.
+The API state in that test was in-memory, not PostgreSQL; the earlier live
+test-database daemon proof covers a separate persistence boundary.
 
 `caf_orchestration_worker.synthetic_daemon` is a persistent **test-only**
 polling loop. The umbrella's `p0-test-daemon` profile gives it an isolated

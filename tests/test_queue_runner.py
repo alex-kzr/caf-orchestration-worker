@@ -13,6 +13,7 @@ from caf_orchestration_worker.queue_runner import CleanupTimeout, LostLeaseError
 from caf_orchestration_worker.bounded_worker import run_one_synthetic
 from caf_orchestration_worker.synthetic_daemon import serve
 from caf_orchestration_worker.api_store import WorkerAPIStore
+from caf_orchestration_worker.workspace_binding import WorkspaceBinding
 
 
 def claim():
@@ -61,7 +62,10 @@ def test_http_synthetic_rejects_other_workspace_before_execution(tmp_path):
 
     store = FakeHTTPStore()
     store.run = replace(store.run, workspace_id="wrong-workspace")
-    artifact = asyncio.run(run_one_synthetic(store, "worker-12345", tmp_path))
+    binding = WorkspaceBinding("caf-synthetic-v1", "caf-sample-app", tmp_path,
+                               "a" * 40, None)
+    artifact = asyncio.run(run_one_synthetic(store, "worker-12345", tmp_path,
+                                             binding=binding))
     assert artifact == {"status": "blocked", "reason": "workspace_scope_mismatch"}
     assert store.completed == ("failed", artifact)
 
