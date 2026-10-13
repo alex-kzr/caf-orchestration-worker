@@ -8,10 +8,10 @@ version = "0.1.0"
 description = "CAF provider-neutral orchestration experiment"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["caf-agent-runtime"]
+dependencies = ["caf-agent-runtime==0.1.0"]
 
 [tool.uv.sources]
-caf-agent-runtime = { path = "../caf-agent-runtime", editable = true }
+caf-agent-runtime = { git = "https://github.com/alex-kzr/caf-agent-runtime", rev = "227e0cc0166fcf3c9bbdc8894ba483065a49836f" }
 
 [dependency-groups]
 dev = ["pytest>=8,<10"]

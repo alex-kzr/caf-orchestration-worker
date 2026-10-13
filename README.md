@@ -1,10 +1,10 @@
 # caf-orchestration-worker
 
-CAF's provider-neutral `asyncio` workflow baseline. The current executable slice uses the adjacent `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; it does **not** edit Git repositories, run Codex/Claude CLI, execute tests against code, or persist state to a database.
+CAF's provider-neutral `asyncio` workflow baseline. The current executable slice uses the published `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; it does **not** edit Git repositories, run Codex/Claude CLI, execute tests against code, or persist state to a database.
 
 ## Run the synthetic slice
 
-From an umbrella checkout with both submodules initialized:
+From an umbrella checkout or a standalone worker clone:
 
 ```powershell
 uv run --python 3.12 pytest -q
@@ -14,7 +14,7 @@ uv run --python 3.12 python -m caf_orchestration_worker synthetic-demo --output 
 The demo emits a JSON run artifact with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime` from `../caf-agent-runtime` for this local umbrella checkout. This dependency source must become a versioned, portable release or Git reference before distributing the worker separately.
+`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` from `https://github.com/alex-kzr/caf-agent-runtime` at commit `227e0cc0166fcf3c9bbdc8894ba483065a49836f`. `uv.lock` records the same exact revision. A fresh checkout needs network access to fetch this Git dependency unless uv already has it cached. The umbrella's adjacent runtime submodule remains useful for development, but the worker does not import from or install that sibling directory.
 
 ## Contract and boundaries
 

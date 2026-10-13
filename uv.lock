@@ -5,15 +5,7 @@ requires-python = ">=3.12"
 [[package]]
 name = "caf-agent-runtime"
 version = "0.1.0"
-source = { editable = "../caf-agent-runtime" }
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8,<10" },
-    { name = "pytest-asyncio", specifier = ">=0.24,<2" },
-]
+source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=227e0cc0166fcf3c9bbdc8894ba483065a49836f#227e0cc0166fcf3c9bbdc8894ba483065a49836f" }
 
 [[package]]
 name = "caf-orchestration-worker"
@@ -29,7 +21,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "caf-agent-runtime", editable = "../caf-agent-runtime" }]
+requires-dist = [{ name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=227e0cc0166fcf3c9bbdc8894ba483065a49836f" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8,<10" }]
