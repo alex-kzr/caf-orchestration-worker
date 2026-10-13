@@ -73,8 +73,9 @@ proxies and redirects, uses a distinct scoped `CAF_WORKER_TOKEN` and never sends
 in a URL. The host fixture selects it only when `CAF_WORKER_API_URL` and
 `CAF_WORKER_TOKEN` are set; otherwise it uses the direct isolated PostgreSQL
 test URL. Both paths verify the connected database begins with
-`caf_queue_test_` before any claim. No live worker token has been issued, and
-no persistent host API worker is started by normal commands.
+`caf_queue_test_` before any claim. One approved temporary token was used for
+a single synthetic HTTP Run and then removed; no persistent host API worker
+is started by normal commands.
 
 The API grant is now bound to one Run/task, repository, workspace ID, base
 revision, provider, worker identity, exact test database and an expiry no
