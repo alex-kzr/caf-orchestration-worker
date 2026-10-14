@@ -130,8 +130,10 @@ reason and type categories. An exit-zero provider result with a rejected
 envelope is categorized as `envelope`, not `empty_output`. Offline fixture
 tests cover this path; the previous live response was not retained. See the
 [envelope diagnostic gate](../../docs/experiments/2026-10-14-envelope-diagnostic-gate.md).
-The worker lockfile pins runtime commit `e1982f807d85905999f0b710c1810c90b26003b5`;
+The worker lockfile pins runtime commit `1aac05c60db738dd51f95644490fba11e6e6c269`;
 a fresh Git-backed install requires that commit to be published first.
+The worker allowlists the runtime's bounded root-array shape fields when an
+array is rejected. It does not interpret an array as a successful plan.
 
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.

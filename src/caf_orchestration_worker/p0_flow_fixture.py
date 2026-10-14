@@ -183,6 +183,10 @@ def _safe_envelope(value: object) -> dict | None:
         return item if type(item) is str and item in choices else None
 
     count = value.get("stdout_bytes_capped")
+    def bounded_count(name: str) -> int | None:
+        item = value.get(name)
+        return item if type(item) is int and 0 <= item <= 1001 else None
+
     return {
         "reason": allowed("reason", _ENVELOPE_REASONS),
         "framing": allowed("framing", _ENVELOPE_FRAMING),
@@ -195,6 +199,13 @@ def _safe_envelope(value: object) -> dict | None:
         "structured_output_type": allowed("structured_output_type", _ENVELOPE_TYPES),
         "nested_structured_output_type": allowed("nested_structured_output_type", _ENVELOPE_TYPES),
         "stdout_bytes_capped": (count if type(count) is int and 0 <= count <= 65537 else None),
+        "array_length_capped": bounded_count("array_length_capped"),
+        "array_non_object_count_capped": bounded_count("array_non_object_count_capped"),
+        "array_result_count_capped": bounded_count("array_result_count_capped"),
+        "array_structured_count_capped": bounded_count("array_structured_count_capped"),
+        "array_error_count_capped": bounded_count("array_error_count_capped"),
+        "array_result_position": allowed(
+            "array_result_position", frozenset({"none", "last", "non_last", "multiple"})),
     }
 
 
