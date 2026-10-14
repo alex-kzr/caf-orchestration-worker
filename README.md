@@ -1,6 +1,6 @@
 # caf-orchestration-worker
 
-CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Their default demos use the pinned `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; those demos do not edit Git repositories or run Codex/Claude. Separately, opt-in P0 fixture entrypoints use the sample repository, a scoped HTTP grant and real host CLI adapters. The Flow fixture has one measured plan-only Run; the new explicit-schema path has offline coverage only.
+CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Their default demos use the pinned `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; those demos do not edit Git repositories or run Codex/Claude. Separately, opt-in P0 fixture entrypoints use the sample repository, a scoped HTTP grant and real host CLI adapters. The explicit-schema plan-only path has a measured envelope rejection; see the umbrella envelope diagnostic gate.
 
 ## Run the synthetic slice
 
@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` resolves `caf-agent-runtime==0.1.0` at commit `c25a190729140953f77c02d80b0d5abb60577863` and `caf-control-api==0.1.0` at commit `e46c34d8a49affcaab6f61c27178f99c4661345d` from their published Git repositories. `uv.lock` records both exact revisions. A fresh checkout needs network access to fetch these Git dependencies unless uv has them cached. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
+`[tool.uv.sources]` pins `caf-agent-runtime==0.1.0` at commit `526c16ee658de6b955e2c860dd2c641d9e7d67ac` and `caf-control-api==0.1.0` at commit `e46c34d8a49affcaab6f61c27178f99c4661345d`. `uv.lock` records both revisions. The runtime commit is local until separately published, so a fresh Git-backed install cannot fetch it yet. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
 
 ## Contract and boundaries
 
