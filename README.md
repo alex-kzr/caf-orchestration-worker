@@ -1,6 +1,6 @@
 # caf-orchestration-worker
 
-CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Both use the published `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; neither edits Git repositories, runs Codex/Claude CLI, or executes tests against code. A separate explicit queue proof can claim one PostgreSQL Run, pass it through the synthetic baseline and persist a labeled artifact; it is not a daemon or a real coding run.
+CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Their default demos use the published `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; those demos do not edit Git repositories or run Codex/Claude. Separately, opt-in P0 fixture entrypoints use the sample repository, a scoped HTTP grant and real host CLI adapters. The Flow fixture entrypoint has only offline fake-CLI coverage so far.
 
 ## Run the synthetic slice
 
@@ -63,6 +63,21 @@ local commit SHA in the Run artifact. The commit stays on a local branch; no
 push or merge occurs. An unverified process-tree cleanup leaves the claim
 unacknowledged and preserves the worktree for investigation. This fixture path
 is not a general production worker or a persistent daemon.
+
+### One-Run Flow fixture
+
+`python -m caf_orchestration_worker.p0_flow_worker` is a separate opt-in
+single-Run Flow fixture. It uses the same exact sample workspace and isolated
+`caf_queue_test_*` database boundary. Within one claimed Run, CrewAI Flow
+sequences a structured no-tools Claude plan, Codex implementation, structured
+no-tools Claude review, at most `max_corrections` Codex corrections with renewed
+review, and deterministic acceptance suites. The plan steps are passed to the
+implementation stage. Only the sample implementation file may change; a
+successful result records a local commit and bounded stage evidence. Offline
+fake-CLI tests exercised a rejected review followed by one correction and
+passing gates inside a single Flow Run, plus zero-correction rejection and
+pre-claim scope checks. This entrypoint has **not** been run with real CLIs or
+PostgreSQL. It does not activate a persistent worker or broaden the HTTP grant.
 
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.

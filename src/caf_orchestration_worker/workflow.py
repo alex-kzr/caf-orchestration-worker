@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from caf_agent_runtime import AgentStatus, CodingAgentRuntime, CodingTask
 from caf_agent_runtime.windows_job import ProcessTreeCleanupError
@@ -72,17 +72,23 @@ class RunArtifact:
 class WorkflowSession:
     """Shared runtime calls and bounded policy; Flow controls stage sequencing."""
 
-    def __init__(self, request: RunRequest, runtime: CodingAgentRuntime, workspace: Path, mode: str) -> None:
+    def __init__(self, request: RunRequest, runtime: CodingAgentRuntime, workspace: Path, mode: str,
+                 provider_by_operation: Mapping[str, str] | None = None) -> None:
         if not workspace.is_dir():
             raise ValueError("workspace must be an existing directory")
         self.request = request
         self.runtime = runtime
         self.workspace = workspace
+        self.provider_by_operation = dict(provider_by_operation or {})
+        if any(not operation.strip() or not provider.strip()
+               for operation, provider in self.provider_by_operation.items()):
+            raise ValueError("operation/provider mappings must not be blank")
         self.artifact = RunArtifact(request.run_id, request.correlation_id, mode, "running", None, 0, _now(), request.base_revision)
 
     async def stage(self, operation: str, prompt: str | None = None) -> StageArtifact:
         task_id = f"{self.request.run_id}:{len(self.artifact.stages) + 1}:{operation}"
-        task = CodingTask(task_id, self.request.correlation_id, prompt or self.request.prompt, self.request.provider, operation)
+        provider = self.provider_by_operation.get(operation, self.request.provider)
+        task = CodingTask(task_id, self.request.correlation_id, prompt or self.request.prompt, provider, operation)
         started = _now()
         try:
             result = await self.runtime.execute(task, self.workspace)
@@ -121,7 +127,12 @@ class WorkflowSession:
     async def implement(self) -> RunArtifact:
         if self.artifact.status != "running":
             return self.artifact
-        item = await self.stage("implement")
+        prompt = self.request.prompt
+        if self.artifact.stages and self.artifact.stages[0].operation == "plan":
+            steps = self.artifact.stages[0].output.get("steps")
+            if isinstance(steps, list) and all(isinstance(step, str) for step in steps):
+                prompt += "\n\nPlan steps: " + json.dumps(steps)
+        item = await self.stage("implement", prompt)
         if item.status != AgentStatus.SUCCEEDED.value:
             self.finish("blocked", f"implement_{item.failure_class or item.status}")
         return self.artifact
@@ -161,9 +172,10 @@ class WorkflowSession:
                 return self.finish("blocked", f"correct_{correction.failure_class or correction.status}")
 
 
-async def run_baseline(request: RunRequest, runtime: CodingAgentRuntime, workspace: Path) -> RunArtifact:
+async def run_baseline(request: RunRequest, runtime: CodingAgentRuntime, workspace: Path,
+                       provider_by_operation: Mapping[str, str] | None = None) -> RunArtifact:
     """Plain asyncio mode C using the same stage policy as Mode B."""
-    session = WorkflowSession(request, runtime, workspace, "asyncio-baseline")
+    session = WorkflowSession(request, runtime, workspace, "asyncio-baseline", provider_by_operation)
     await session.plan()
     await session.implement()
     return await session.evaluate()

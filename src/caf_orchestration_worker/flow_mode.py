@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Mapping
 
 from caf_agent_runtime import CodingAgentRuntime
 from crewai.flow.flow import Flow, listen, start
@@ -32,9 +33,10 @@ class CodingFlow(Flow):
         return await self.session.evaluate()
 
 
-async def run_flow(request: RunRequest, runtime: CodingAgentRuntime, workspace: Path) -> RunArtifact:
+async def run_flow(request: RunRequest, runtime: CodingAgentRuntime, workspace: Path,
+                   provider_by_operation: Mapping[str, str] | None = None) -> RunArtifact:
     """Run the same policy as the baseline through real CrewAI Flow listeners."""
-    session = WorkflowSession(request, runtime, workspace, "crewai-flow")
+    session = WorkflowSession(request, runtime, workspace, "crewai-flow", provider_by_operation)
     flow = CodingFlow(session)
     await flow.kickoff_async()
     return session.artifact

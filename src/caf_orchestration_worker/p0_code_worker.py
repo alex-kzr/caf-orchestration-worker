@@ -69,7 +69,8 @@ def _git(repository: Path, *args: str, timeout: int = 20) -> str:
 
 
 def _gate(workspace: Path, filename: str) -> dict:
-    env = {**child_environment(), "PYTHONPATH": str(workspace / "src")}
+    env = {**child_environment(), "PYTHONPATH": str(workspace / "src"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
     completed = subprocess.run(
         ["python", "-m", "unittest", "discover", "-s", "tests", "-p", filename],
         cwd=workspace, env=env, capture_output=True, text=True, timeout=30,
