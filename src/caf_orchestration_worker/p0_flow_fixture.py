@@ -25,8 +25,13 @@ FIXTURE_PROVIDERS = {
 def _plan_steps(value: object) -> list[str] | None:
     if not isinstance(value, str):
         return None
+    stripped = value.strip()
+    if stripped.startswith("```json") and stripped.endswith("```"):
+        stripped = stripped[7:-3].strip()
+    elif stripped.startswith("```") and stripped.endswith("```"):
+        stripped = stripped[3:-3].strip()
     try:
-        parsed = json.loads(value.strip())
+        parsed = json.loads(stripped)
     except json.JSONDecodeError:
         return None
     steps = parsed.get("steps") if isinstance(parsed, dict) else None

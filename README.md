@@ -76,8 +76,12 @@ implementation stage. Only the sample implementation file may change; a
 successful result records a local commit and bounded stage evidence. Offline
 fake-CLI tests exercised a rejected review followed by one correction and
 passing gates inside a single Flow Run, plus zero-correction rejection and
-pre-claim scope checks. This entrypoint has **not** been run with real CLIs or
-PostgreSQL. It does not activate a persistent worker or broaden the HTTP grant.
+pre-claim scope checks. One approved real-CLI/PostgreSQL Run reached the plan
+stage but ended `failed/plan_agent`; no code, review, tests or real correction
+were executed. See the umbrella's [live Flow report](../../docs/experiments/2026-10-14-one-run-flow-gate.md).
+The plan parser now accepts plain JSON or one JSON code fence; whether that
+caused the live failure is unknown. This entrypoint does not activate a
+persistent worker or broaden the HTTP grant.
 
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.

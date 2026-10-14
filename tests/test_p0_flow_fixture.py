@@ -13,7 +13,7 @@ from caf_agent_runtime import AgentResult, AgentStatus
 from caf_control_api.storage import ClaimedRun
 from caf_orchestration_worker.flow_mode import run_flow
 from caf_orchestration_worker import p0_flow_worker
-from caf_orchestration_worker.p0_flow_fixture import FIXTURE_PROVIDERS, FixtureStageRuntime
+from caf_orchestration_worker.p0_flow_fixture import FIXTURE_PROVIDERS, FixtureStageRuntime, _plan_steps
 from caf_orchestration_worker.p0_code_worker import FIXTURE_PROMPT
 from caf_orchestration_worker.workflow import RunRequest
 from caf_orchestration_worker.workspace_binding import WorkspaceBinding
@@ -39,6 +39,13 @@ def fixture_repo(path: Path) -> None:
     subprocess.run(["git", "-C", str(path), "add", "."], check=True)
     subprocess.run(["git", "-C", str(path), "-c", "user.name=CAF Test",
                     "-c", "user.email=caf-test@example.invalid", "commit", "-qm", "base"], check=True)
+
+
+def test_structured_plan_accepts_one_json_fence_but_rejects_extra_prose() -> None:
+    assert _plan_steps('```json\n{"steps":["edit sample","run tests"]}\n```') == [
+        "edit sample", "run tests"
+    ]
+    assert _plan_steps('Here is the plan: {"steps":["edit sample"]}') is None
 
 
 class FakeCLI:
