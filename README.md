@@ -17,7 +17,7 @@ uv run --extra flow --python 3.12 python -m caf_orchestration_worker synthetic-d
 The demos emit the same JSON run artifact shape with correlation ID, stage outcomes, timestamps, ordered runtime events, one rejected review, one correction and a passing synthetic gate. `mode` distinguishes `asyncio-baseline` and `crewai-flow`. The output path is explicit and should be outside the source tree. The fixture is deterministic in its outcomes and stage order; timestamps vary by run.
 `--base-revision` records a supplied starting commit for comparison; this synthetic mode does not check out or verify that commit.
 
-`[tool.uv.sources]` pins `caf-agent-runtime==0.1.0` at commit `526c16ee658de6b955e2c860dd2c641d9e7d67ac` and `caf-control-api==0.1.0` at commit `e46c34d8a49affcaab6f61c27178f99c4661345d`. `uv.lock` records both revisions. The runtime commit is local until separately published, so a fresh Git-backed install cannot fetch it yet. The umbrella's adjacent submodules remain useful for development, but the worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
+`[tool.uv.sources]` pins `caf-agent-runtime==0.1.0` at commit `5ddab9e6112ef81f1999cbfc6d0c2e8327c8b6bb` and `caf-control-api==0.1.0` at commit `e46c34d8a49affcaab6f61c27178f99c4661345d`. `uv.lock` records both revisions. The runtime commit is local until separately published, so a fresh Git-backed install cannot fetch it yet. For offline compatibility testing, a temporary worker copy used the adjacent runtime as a local path source; this does not change the committed GitHub source. After publishing runtime, run `uv lock --check` and `uv sync --locked --python 3.12 --extra flow --group dev` from a fresh worker clone before a live Run. The umbrella's adjacent submodules remain useful for development, but the committed worker does not import from sibling directories. Host Codex runs require an explicit native executable path; neither the synthetic demo nor queue proof constructs a host CLI adapter.
 
 ## Contract and boundaries
 
@@ -130,7 +130,7 @@ reason and type categories. An exit-zero provider result with a rejected
 envelope is categorized as `envelope`, not `empty_output`. Offline fixture
 tests cover this path; the previous live response was not retained. See the
 [envelope diagnostic gate](../../docs/experiments/2026-10-14-envelope-diagnostic-gate.md).
-The worker lockfile pins runtime commit `526c16ee658de6b955e2c860dd2c641d9e7d67ac`;
+The worker lockfile pins runtime commit `5ddab9e6112ef81f1999cbfc6d0c2e8327c8b6bb`;
 a fresh Git-backed install requires that commit to be published first.
 The worker allowlists the runtime's bounded root-array shape fields when an
 array is rejected. It does not interpret an array as a successful plan.
