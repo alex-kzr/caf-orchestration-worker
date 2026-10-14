@@ -130,7 +130,7 @@ reason and type categories. An exit-zero provider result with a rejected
 envelope is categorized as `envelope`, not `empty_output`. Offline fixture
 tests cover this path; the previous live response was not retained. See the
 [envelope diagnostic gate](../../docs/experiments/2026-10-14-envelope-diagnostic-gate.md).
-The worker lockfile pins runtime commit `082a12b2d826388608cb3b1785ce07528cba7d99`;
+The worker lockfile pins runtime commit `e1982f807d85905999f0b710c1810c90b26003b5`;
 a fresh Git-backed install requires that commit to be published first.
 
 The earlier direct-database experiment used
