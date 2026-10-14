@@ -1,6 +1,7 @@
 """Offline, no-model checks of the real Flow's role routing and correction gate."""
 
 import asyncio
+import json
 from pathlib import Path
 import subprocess
 from uuid import uuid4
@@ -9,11 +10,14 @@ import pytest
 
 pytest.importorskip("crewai.flow.flow")
 
-from caf_agent_runtime import AgentResult, AgentStatus
+from caf_agent_runtime import AgentResult, AgentStatus, CodingTask, FailureClass
 from caf_control_api.storage import ClaimedRun
 from caf_orchestration_worker.flow_mode import run_flow
 from caf_orchestration_worker import p0_flow_worker
-from caf_orchestration_worker.p0_flow_fixture import FIXTURE_PROVIDERS, FixtureStageRuntime, _plan_steps
+from caf_orchestration_worker.p0_flow_fixture import (
+    FIXTURE_PROVIDERS, FixtureStageRuntime, _parse_plan, _parse_review,
+    _plan_steps, _safe_diagnostic,
+)
 from caf_orchestration_worker.p0_code_worker import FIXTURE_PROMPT
 from caf_orchestration_worker.workflow import RunRequest
 from caf_orchestration_worker.workspace_binding import WorkspaceBinding
@@ -48,6 +52,62 @@ def test_structured_plan_accepts_one_json_fence_but_rejects_extra_prose() -> Non
     assert _plan_steps('Here is the plan: {"steps":["edit sample"]}') is None
 
 
+@pytest.mark.parametrize(
+    "case", json.loads((Path(__file__).parent / "fixtures/claude_plan_text_cases.json")
+                       .read_text(encoding="utf-8")),
+    ids=lambda case: case["name"],
+)
+def test_supported_claude_result_text_formats_and_negative_cases(case: dict) -> None:
+    steps, outcome, fmt = _parse_plan(case["text"])
+    assert (outcome, fmt) == (case["outcome"], case["format"])
+    assert (steps is not None) == (outcome == "valid")
+
+
+@pytest.mark.parametrize("value,outcome", [
+    ('{"approved":true,"findings":[]}', "valid"),
+    ('```json\n{"approved":false,"findings":["fix logic"]}\n```', "valid"),
+    ('Review: {"approved":true,"findings":[]}', "invalid_json"),
+    ('{"approved":"yes","findings":[]}', "invalid_schema"),
+    ('{"approved":true,"findings":[],"extra":1}', "invalid_schema"),
+])
+def test_flow_review_requires_complete_structured_verdict(value: str, outcome: str) -> None:
+    verdict, actual, _ = _parse_review(value)
+    assert actual == outcome
+    assert (verdict is not None) == (outcome == "valid")
+
+
+@pytest.mark.parametrize("status,failure,exit_code,output,outcome,category", [
+    (AgentStatus.FAILED, FailureClass.AGENT, 7, {}, "not_run", "process_exit"),
+    (AgentStatus.FAILED, FailureClass.INFRASTRUCTURE, 0, {}, "not_run", "unexpected_error"),
+    (AgentStatus.TIMED_OUT, FailureClass.TIMEOUT, None, {}, "not_run", "timeout"),
+    (AgentStatus.FAILED, FailureClass.INFRASTRUCTURE, 1,
+     {"diagnostic_category": "authentication"}, "not_run", "auth_limit"),
+    (AgentStatus.FAILED, FailureClass.AGENT, 1,
+     {"stderr_tail": "429 rate limit reached SECRET"}, "not_run", "auth_limit"),
+    (AgentStatus.FAILED, FailureClass.INFRASTRUCTURE, 1,
+     {"diagnostic_category": "network"}, "not_run", "transport"),
+    (AgentStatus.SUCCEEDED, None, 0, {"final_text": ""}, "empty_output", "empty_output"),
+    (AgentStatus.SUCCEEDED, None, 0, {"final_text": "SECRET{"}, "invalid_json", "json"),
+    (AgentStatus.SUCCEEDED, None, 0, {"final_text": '{"steps":[]}'}, "invalid_schema", "schema"),
+])
+def test_safe_stage_diagnostic_uses_only_structured_metadata(
+    status, failure, exit_code, output, outcome, category,
+) -> None:
+    task = CodingTask("one:plan", "corr-safe", "PRIVATE PROMPT", "claude", "plan")
+    result = AgentResult(task.run_id, task.correlation_id, status, "PRIVATE SUMMARY",
+                         (), failure, exit_code=exit_code, output=output)
+    diagnostic = _safe_diagnostic(task, result, outcome, "plain_json")
+    assert diagnostic["category"] == category
+    assert diagnostic["phase"] == "plan"
+    assert diagnostic["correlation_id"] == "corr-safe"
+    assert diagnostic["parser_outcome"] == outcome
+    assert diagnostic["captured_response_bytes"] == (
+        len(output["final_text"].encode("utf-8")) if "final_text" in output else None
+    )
+    encoded = json.dumps(diagnostic)
+    assert "SECRET" not in encoded and "PRIVATE" not in encoded
+
+
 class FakeCLI:
     def __init__(self, provider: str) -> None:
         self.provider = provider
@@ -77,6 +137,73 @@ class FakeCLI:
 
     async def get_status(self, run_id):
         return AgentStatus.SUCCEEDED
+
+
+@pytest.mark.parametrize("final_text,expected", [
+    (None, "empty_output"),
+    ("some prose", "json"),
+    ('{"steps":[]}', "schema"),
+])
+def test_flow_plan_failure_records_safe_parser_category(
+    tmp_path: Path, final_text: str | None, expected: str,
+) -> None:
+    fixture_repo(tmp_path)
+
+    class PlanCLI(FakeCLI):
+        async def execute(self, task, workspace, session_id=None):
+            self.calls.append(task)
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.SUCCEEDED,
+                               "provider text withheld", (), output={"final_text": final_text})
+
+    codex, claude = FakeCLI("codex"), PlanCLI("claude")
+    artifact = asyncio.run(run_flow(
+        RunRequest("plan-fails", "corr-safe", FIXTURE_PROMPT, "codex"),
+        FixtureStageRuntime(codex, claude), tmp_path, FIXTURE_PROVIDERS,
+    ))
+    assert artifact.status == "blocked" and artifact.reason == "plan_agent"
+    assert not codex.calls and len(artifact.stages) == 1
+    diagnostic = artifact.stages[0].output["diagnostic"]
+    assert diagnostic["category"] == expected
+    assert diagnostic["provider_status"] == "succeeded"
+    assert "final_text" not in artifact.stages[0].output
+
+
+@pytest.mark.parametrize("error,category", [
+    (ConnectionError("PRIVATE transport address"), "transport"),
+    (TimeoutError("PRIVATE timing detail"), "timeout"),
+])
+def test_plan_runtime_exception_uses_safe_category(
+    tmp_path: Path, error: Exception, category: str,
+) -> None:
+    class RaisingCLI(FakeCLI):
+        async def execute(self, task, workspace, session_id=None):
+            raise error
+
+    task = CodingTask("one:plan", "corr-safe", "PRIVATE PROMPT", "claude", "plan")
+    result = asyncio.run(FixtureStageRuntime(FakeCLI("codex"), RaisingCLI("claude"))
+                         .execute(task, tmp_path))
+    assert result.status != AgentStatus.SUCCEEDED
+    assert result.output["diagnostic"]["category"] == category
+    assert "PRIVATE" not in json.dumps(result.output)
+
+
+def test_plan_nonzero_cli_exit_stays_distinct_from_parser_failure(tmp_path: Path) -> None:
+    class ExitingCLI(FakeCLI):
+        async def execute(self, task, workspace, session_id=None):
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.FAILED,
+                               "provider text withheld", (), FailureClass.AGENT,
+                               exit_code=7,
+                               output={"final_text": "PRIVATE TRANSCRIPT",
+                                       "stderr_tail": "PRIVATE ERROR"})
+
+    task = CodingTask("one:plan", "corr-safe", "PRIVATE PROMPT", "claude", "plan")
+    result = asyncio.run(FixtureStageRuntime(FakeCLI("codex"), ExitingCLI("claude"))
+                         .execute(task, tmp_path))
+    diagnostic = result.output["diagnostic"]
+    assert diagnostic["category"] == "process_exit"
+    assert diagnostic["exit_code"] == 7
+    assert diagnostic["parser_outcome"] == "not_run"
+    assert "PRIVATE" not in json.dumps(result.output)
 
 
 def test_actual_flow_routes_two_providers_and_corrects_in_one_run(tmp_path: Path, monkeypatch) -> None:
@@ -169,3 +296,67 @@ def test_host_flow_worker_rejects_unscoped_prompt_before_clis(tmp_path: Path, mo
     ))
     assert artifact == {"status": "blocked", "reason": "fixture_claim_mismatch"}
     assert store.done == ("failed", artifact)
+
+
+def test_one_claim_persists_safe_plan_diagnostic_without_provider_text(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    root = tmp_path / "caf" / "repositories" / "caf-sample-app"
+    root.mkdir(parents=True)
+    fixture_repo(root)
+    base = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    monkeypatch.setattr(p0_flow_worker, "BASE_REVISION", base)
+    external = tmp_path / "external"
+    external.mkdir()
+    claim = ClaimedRun(uuid4(), uuid4(), uuid4(), "caf-sample-app", base,
+                       FIXTURE_PROMPT, ["gates pass"], "codex", 1, 1,
+                       "caf-sample-fixture-v1")
+
+    class Store:
+        completed = None
+
+        def database_name(self):
+            return "caf_queue_test_offline"
+
+        def quarantine_expired(self):
+            return []
+
+        def claim_queued(self, owner, lease_seconds=60):
+            return claim
+
+        def claim_control(self, run_id, owner):
+            return True, False
+
+        def renew_lease(self, run_id, owner, lease_seconds=60):
+            return True
+
+        def complete_claim(self, run_id, owner, status, artifact):
+            self.completed = status, artifact
+            return True
+
+    class InvalidPlan(FakeCLI):
+        async def execute(self, task, workspace, session_id=None):
+            self.calls.append(task)
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.SUCCEEDED,
+                               "provider text withheld", (),
+                               output={"final_text": "private prose {\"steps\":[\"x\"]}"})
+
+    store, codex, claude = Store(), FakeCLI("codex"), InvalidPlan("claude")
+    artifact = asyncio.run(p0_flow_worker.run_one_flow_fixture(
+        store, "worker-caf-test", WorkspaceBinding(
+            "caf-sample-fixture-v1", "caf-sample-app", root, base, external,
+        ), codex, claude,
+    ))
+    assert store.completed == ("failed", artifact)
+    assert artifact["reason"] == "plan_agent" and artifact["iterations"] == 0
+    assert artifact["stages"][0]["diagnostic"] == {
+        "phase": "plan", "correlation_id": str(claim.correlation_id),
+        "category": "json", "provider_status": "succeeded",
+        "runtime_failure_class": None, "exit_code": None,
+        "captured_response_bytes": len('private prose {"steps":["x"]}'.encode()),
+        "input_format": "plain_json",
+        "parser_outcome": "invalid_json",
+    }
+    assert "private prose" not in json.dumps(artifact)
+    assert not codex.calls

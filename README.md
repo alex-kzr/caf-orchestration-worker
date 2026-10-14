@@ -83,6 +83,18 @@ The plan parser now accepts plain JSON or one JSON code fence; whether that
 caused the live failure is unknown. This entrypoint does not activate a
 persistent worker or broaden the HTTP grant.
 
+The Flow fixture now stores a small `diagnostic` object for plan and review
+stages: phase, correlation ID, fixed category, provider status/failure class,
+exit code, captured response byte count, input format and
+parser outcome. Categories distinguish process exit, timeout, authentication
+or limit signal, transport signal, empty output, invalid JSON and invalid
+schema. These are classifications of observed CLI metadata, not a copy of
+stdout/stderr or a claim that all provider errors are recognized. The parser
+accepts only a complete JSON object or one complete JSON code fence; extra
+prose and extra schema fields fail closed. The response byte count measures
+the runtime's redacted, capped capture, not the provider's original output.
+Synthetic offline fixtures cover both supported formats and negative cases.
+
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.
 The current one-Run HTTP grant cannot read a different source Run, so that

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
 from caf_agent_runtime import (
     AgentResult, AgentStatus, CodingAgentRuntime, CodingTask, FailureClass,
 )
+from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 
-from .p0_code_worker import ALLOWED_FILE, FIXTURE_PROMPT, _gate, _git, _review_verdict
+from .p0_code_worker import ALLOWED_FILE, FIXTURE_PROMPT, _gate, _git
 
 
 FIXTURE_PROVIDERS = {
@@ -22,24 +24,112 @@ FIXTURE_PROVIDERS = {
 }
 
 
-def _plan_steps(value: object) -> list[str] | None:
-    if not isinstance(value, str):
-        return None
+_FENCE = re.compile(r"\A```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```\Z", re.I | re.S)
+_AUTH_LIMIT = re.compile(r"(?i)(?:\brate\s+limit\b|\bquota\b|\b429\b|\bauth(?:entication)?\b|\blogin\b)")
+
+
+class _DuplicateField(ValueError):
+    pass
+
+
+def _unique_fields(pairs: list[tuple[str, object]]) -> dict:
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise _DuplicateField
+        value[key] = item
+    return value
+
+
+def _json_object(value: object) -> tuple[dict | None, str, str]:
+    """Parse only a complete object or a single complete JSON fence."""
+    if not isinstance(value, str) or not value.strip():
+        return None, "empty_output", "none"
     stripped = value.strip()
-    if stripped.startswith("```json") and stripped.endswith("```"):
-        stripped = stripped[7:-3].strip()
-    elif stripped.startswith("```") and stripped.endswith("```"):
-        stripped = stripped[3:-3].strip()
+    fmt = "plain_json"
+    if stripped.startswith("```"):
+        match = _FENCE.fullmatch(stripped)
+        if match is None:
+            return None, "invalid_json", "unsupported"
+        body = match.group("body")
+        if re.search(r"(?m)^```", body):
+            return None, "invalid_json", "unsupported"
+        stripped = body.strip()
+        fmt = "fenced_json"
     try:
-        parsed = json.loads(stripped)
+        parsed = json.loads(stripped, object_pairs_hook=_unique_fields)
     except json.JSONDecodeError:
-        return None
-    steps = parsed.get("steps") if isinstance(parsed, dict) else None
+        return None, "invalid_json", fmt
+    except _DuplicateField:
+        return None, "invalid_schema", fmt
+    if not isinstance(parsed, dict):
+        return None, "invalid_schema", fmt
+    return parsed, "valid_json", fmt
+
+
+def _parse_plan(value: object) -> tuple[list[str] | None, str, str]:
+    parsed, outcome, fmt = _json_object(value)
+    if parsed is None:
+        return None, outcome, fmt
+    steps = parsed.get("steps")
     if (not isinstance(steps, list) or not 1 <= len(steps) <= 8
             or any(not isinstance(step, str) or not 1 <= len(step.strip()) <= 300
-                   for step in steps)):
-        return None
-    return [step.strip() for step in steps]
+                   for step in steps) or set(parsed) != {"steps"}):
+        return None, "invalid_schema", fmt
+    return [step.strip() for step in steps], "valid", fmt
+
+
+def _plan_steps(value: object) -> list[str] | None:
+    return _parse_plan(value)[0]
+
+
+def _parse_review(value: object) -> tuple[dict | None, str, str]:
+    parsed, outcome, fmt = _json_object(value)
+    if parsed is None:
+        return None, outcome, fmt
+    findings = parsed.get("findings")
+    if (set(parsed) != {"approved", "findings"}
+            or not isinstance(parsed.get("approved"), bool)
+            or not isinstance(findings, list) or len(findings) > 20
+            or any(not isinstance(item, str) or len(item) > 2000 for item in findings)):
+        return None, "invalid_schema", fmt
+    return parsed, "valid", fmt
+
+
+def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
+                     fmt: str) -> dict:
+    """A fixed-shape record; never copy stdout, stderr, prompts or CLI events."""
+    output = result.output if isinstance(result.output, dict) else {}
+    response = output.get("final_text")
+    stderr = output.get("stderr_tail")
+    runtime_category = output.get("diagnostic_category")
+    if result.status == AgentStatus.TIMED_OUT:
+        category = "timeout"
+    elif result.status == AgentStatus.CANCELLED:
+        category = "cancelled"
+    elif runtime_category == "authentication" or (
+            result.status == AgentStatus.FAILED and isinstance(stderr, str)
+            and _AUTH_LIMIT.search(stderr)):
+        category = "auth_limit"
+    elif runtime_category == "network":
+        category = "transport"
+    elif runtime_category == "orphan_process":
+        category = "process_cleanup"
+    elif result.status == AgentStatus.FAILED and type(result.exit_code) is int and result.exit_code != 0:
+        category = "process_exit"
+    elif result.status == AgentStatus.FAILED:
+        category = "unexpected_error"
+    else:
+        category = {"empty_output": "empty_output", "invalid_json": "json",
+                    "invalid_schema": "schema", "valid": "ok"}.get(outcome, "unexpected_error")
+    return {
+        "phase": task.operation, "correlation_id": task.correlation_id,
+        "category": category, "provider_status": result.status.value,
+        "runtime_failure_class": result.failure_class.value if result.failure_class else None,
+        "exit_code": result.exit_code if type(result.exit_code) is int else None,
+        "captured_response_bytes": len(response.encode("utf-8")) if isinstance(response, str) else None,
+        "input_format": fmt, "parser_outcome": outcome,
+    }
 
 
 class FixtureStageRuntime:
@@ -64,6 +154,23 @@ class FixtureStageRuntime:
         if not diff or len(diff.encode("utf-8")) > 30_000:
             raise ValueError("fixture diff missing or oversized")
         return diff
+
+    async def _call_claude(self, task: CodingTask, workspace: Path,
+                           prompt: str) -> AgentResult:
+        try:
+            return await self.claude.execute(replace(task, prompt=prompt), workspace)
+        except ProcessTreeCleanupError:
+            raise  # An unverified child must not be acknowledged as stopped.
+        except TimeoutError:
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.TIMED_OUT,
+                               "Claude stage timed out", (), FailureClass.TIMEOUT, output={})
+        except Exception as exc:
+            # Exception text may include paths, arguments or provider output.
+            category = "network" if isinstance(exc, ConnectionError) else None
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.FAILED,
+                               "Claude stage raised " + type(exc).__name__, (),
+                               FailureClass.INFRASTRUCTURE,
+                               output={"diagnostic_category": category})
 
     async def execute(self, task: CodingTask, workspace: Path,
                       session_id: str | None = None) -> AgentResult:
@@ -96,15 +203,20 @@ class FixtureStageRuntime:
             prompt = ("Plan this CAF sample coding task without tools or file edits. "
                       "Reply only with a JSON object containing 1-8 short steps in a 'steps' array. "
                       "Include implementation and acceptance checks. Task: " + FIXTURE_PROMPT)
-            result = await self.claude.execute(replace(task, prompt=prompt), workspace)
+            result = await self._call_claude(task, workspace, prompt)
             if result.status == AgentStatus.SUCCEEDED:
-                steps = _plan_steps(result.output.get("final_text"))
+                steps, outcome, fmt = _parse_plan(result.output.get("final_text"))
+                diagnostic = _safe_diagnostic(task, result, outcome, fmt)
                 if steps is None:
                     result = replace(result, status=AgentStatus.FAILED,
                                      failure_class=FailureClass.AGENT,
-                                     summary="invalid structured plan", output={})
+                                     summary="invalid structured plan",
+                                     output={"diagnostic": diagnostic})
                 else:
-                    result = replace(result, output={"steps": steps})
+                    result = replace(result, output={"steps": steps, "diagnostic": diagnostic})
+            else:
+                result = replace(result, output={"diagnostic":
+                                 _safe_diagnostic(task, result, "not_run", "none")})
         else:
             diff = self._changed_diff(workspace)
             prompt = (
@@ -114,16 +226,20 @@ class FixtureStageRuntime:
                 '{"approved":true,"findings":[]}; set approved false and give specific '
                 "findings if the diff is wrong.\n\n" + diff
             )
-            result = await self.claude.execute(replace(task, prompt=prompt), workspace)
+            result = await self._call_claude(task, workspace, prompt)
             if result.status == AgentStatus.SUCCEEDED:
-                verdict = _review_verdict(result.output.get("final_text"))
-                if (verdict is None or len(verdict["findings"]) > 20
-                        or any(len(item) > 2000 for item in verdict["findings"])):
+                verdict, outcome, fmt = _parse_review(result.output.get("final_text"))
+                diagnostic = _safe_diagnostic(task, result, outcome, fmt)
+                if verdict is None:
                     result = replace(result, status=AgentStatus.FAILED,
                                      failure_class=FailureClass.AGENT,
-                                     summary="invalid structured review", output={})
+                                     summary="invalid structured review",
+                                     output={"diagnostic": diagnostic})
                 else:
-                    result = replace(result, output=verdict)
+                    result = replace(result, output={**verdict, "diagnostic": diagnostic})
+            else:
+                result = replace(result, output={"diagnostic":
+                                 _safe_diagnostic(task, result, "not_run", "none")})
         self._statuses[task.run_id] = result.status
         return result
 

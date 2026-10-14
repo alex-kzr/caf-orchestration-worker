@@ -1,0 +1,15 @@
+[
+  {"name":"plain", "text":"{\"steps\":[\"edit sample\",\"run tests\"]}", "outcome":"valid", "format":"plain_json"},
+  {"name":"json_fence", "text":"```json\n{\"steps\":[\"edit sample\"]}\n```", "outcome":"valid", "format":"fenced_json"},
+  {"name":"bare_fence_crlf", "text":"```\r\n{\"steps\":[\"edit sample\"]}\r\n```", "outcome":"valid", "format":"fenced_json"},
+  {"name":"empty", "text":"  ", "outcome":"empty_output", "format":"none"},
+  {"name":"prose_prefix", "text":"Plan: {\"steps\":[\"edit sample\"]}", "outcome":"invalid_json", "format":"plain_json"},
+  {"name":"trailing_prose", "text":"{\"steps\":[\"edit sample\"]} Done.", "outcome":"invalid_json", "format":"plain_json"},
+  {"name":"two_fences", "text":"```json\n{\"steps\":[\"edit sample\"]}\n```\n```json\n{}\n```", "outcome":"invalid_json", "format":"unsupported"},
+  {"name":"malformed_json", "text":"{\"steps\":[", "outcome":"invalid_json", "format":"plain_json"},
+  {"name":"wrong_type", "text":"{\"steps\":\"edit sample\"}", "outcome":"invalid_schema", "format":"plain_json"},
+  {"name":"extra_key", "text":"{\"steps\":[\"edit sample\"],\"prompt\":\"hidden\"}", "outcome":"invalid_schema", "format":"plain_json"},
+  {"name":"duplicate_key", "text":"{\"steps\":[],\"steps\":[\"edit sample\"]}", "outcome":"invalid_schema", "format":"plain_json"},
+  {"name":"blank_step", "text":"{\"steps\":[\"  \"]}", "outcome":"invalid_schema", "format":"plain_json"},
+  {"name":"empty_steps", "text":"{\"steps\":[]}", "outcome":"invalid_schema", "format":"plain_json"}
+]

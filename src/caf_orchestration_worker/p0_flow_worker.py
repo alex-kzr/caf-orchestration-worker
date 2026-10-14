@@ -81,6 +81,8 @@ async def run_one_flow_fixture(
                 "finished_at": flow.ended_at,
                 "stages": [{"operation": stage.operation, "status": stage.status,
                             "failure_class": stage.failure_class,
+                            "diagnostic": (stage.output.get("diagnostic")
+                                           if stage.operation in ("plan", "review") else None),
                             "started_at": stage.started_at, "ended_at": stage.ended_at}
                            for stage in flow.stages],
             }
