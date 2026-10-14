@@ -1,6 +1,6 @@
 # caf-orchestration-worker
 
-CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Their default demos use the published `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; those demos do not edit Git repositories or run Codex/Claude. Separately, opt-in P0 fixture entrypoints use the sample repository, a scoped HTTP grant and real host CLI adapters. The Flow fixture entrypoint has only offline fake-CLI coverage so far.
+CAF's provider-neutral `asyncio` baseline (Mode C) and CrewAI Flow-to-runtime experiment (Mode B). Their default demos use the pinned `caf-agent-runtime` package and its deterministic `SyntheticRuntime`; those demos do not edit Git repositories or run Codex/Claude. Separately, opt-in P0 fixture entrypoints use the sample repository, a scoped HTTP grant and real host CLI adapters. The Flow fixture has one measured plan-only Run; the new explicit-schema path has offline coverage only.
 
 ## Run the synthetic slice
 
@@ -94,6 +94,12 @@ accepts only a complete JSON object or one complete JSON code fence; extra
 prose and extra schema fields fail closed. The response byte count measures
 the runtime's redacted, capped capture, not the provider's original output.
 Synthetic offline fixtures cover both supported formats and negative cases.
+For plan operations, the fixture now also supplies the same strict schema to
+Claude through `--json-schema`; it reads the `structured_output` envelope field
+and still validates the result locally. The safe diagnostic adds a response
+source and a fixed schema error code/keyword, path limited to `steps`, type
+names, and an unknown-field count. Provider keys, values and response text do
+not enter that diagnostic. This new CLI combination is offline tested only.
 
 ### Plan-only Flow diagnostic
 
@@ -113,7 +119,10 @@ the worktree changed. The terminal artifact includes a bounded
 commit, review or gate fields. Success means that the plan parsed; it is not
 P0 acceptance or a claim about implementation quality. Offline tests cover
 both terminal outcomes and the absence of downstream calls. This entrypoint
-has not been run against the real Claude CLI and PostgreSQL.
+completed one real Claude CLI/PostgreSQL Run before the explicit schema was
+added. That Run failed during `plan` with category `schema` and parser outcome
+`invalid_schema`; it ran no downstream stage. The category does not identify
+the rejected field or value. See the [plan-only gate](../../docs/experiments/2026-10-14-plan-only-schema-gate.md).
 
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.

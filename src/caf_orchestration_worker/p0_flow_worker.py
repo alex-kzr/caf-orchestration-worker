@@ -17,7 +17,7 @@ from caf_control_api.storage import ClaimedRun
 from .api_store import WorkerAPIStore
 from .flow_mode import run_flow, run_plan_only_flow
 from .p0_code_worker import ALLOWED_FILE, BASE_REVISION, FIXTURE_PROMPT, _git
-from .p0_flow_fixture import FIXTURE_PROVIDERS, FixtureStageRuntime
+from .p0_flow_fixture import FIXTURE_PROVIDERS, PLAN_SCHEMA, FixtureStageRuntime
 from .queue_runner import dispatch_once
 from .workflow import RunRequest
 from .workspace_binding import WorkspaceBinding, resolve_sample_workspace
@@ -99,6 +99,10 @@ async def run_one_flow_fixture(
                     "category": diagnostic.get("category") if isinstance(diagnostic, dict) else None,
                     "parser_outcome": (diagnostic.get("parser_outcome")
                                        if isinstance(diagnostic, dict) else None),
+                    "response_source": (diagnostic.get("response_source")
+                                        if isinstance(diagnostic, dict) else None),
+                    "schema_error": (diagnostic.get("schema_error")
+                                     if isinstance(diagnostic, dict) else None),
                     "stage_operations": [stage.operation for stage in flow.stages],
                 }
                 if artifact["terminal_diagnostic"]["stage_operations"] != ["plan"]:
@@ -152,7 +156,8 @@ def main() -> int:
         store, os.environ["CAF_WORKER_ID"], binding,
         CodexRuntime(executable=codex_executable, timeout_seconds=180,
                      sandbox="workspace-write"),
-        ClaudeRuntime(timeout_seconds=120, tools=()),
+        ClaudeRuntime(timeout_seconds=120, tools=(),
+                      structured_schemas={"plan": PLAN_SCHEMA}),
     ))
     print("empty" if result is None else f"{result.get('execution_kind')}: {result['status']}")
     return 0 if result is None or result["status"] == "succeeded" else 1

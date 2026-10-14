@@ -23,6 +23,14 @@ FIXTURE_PROVIDERS = {
     "test": "codex",  # The test stage is deterministic; no CLI is launched.
 }
 
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {"steps": {"type": "array", "minItems": 1, "maxItems": 8,
+                             "items": {"type": "string", "minLength": 1,
+                                       "maxLength": 300}}},
+    "required": ["steps"], "additionalProperties": False,
+}
+
 
 _FENCE = re.compile(r"\A```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```\Z", re.I | re.S)
 _AUTH_LIMIT = re.compile(r"(?i)(?:\brate\s+limit\b|\bquota\b|\b429\b|\bauth(?:entication)?\b|\blogin\b)")
@@ -30,6 +38,29 @@ _AUTH_LIMIT = re.compile(r"(?i)(?:\brate\s+limit\b|\bquota\b|\b429\b|\bauth(?:en
 
 class _DuplicateField(ValueError):
     pass
+
+
+def _json_type(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    return "number"
+
+
+def _schema_issue(keyword: str | None, code: str, path: str,
+                  expected: str, actual: str,
+                  unknown_count: int | None = 0) -> dict:
+    """Only fixed schema identifiers and type names; never provider keys or values."""
+    return {"schema_keyword": keyword, "error_code": code, "path": path,
+            "expected_type": expected, "actual_type": actual,
+            "unknown_field_count": unknown_count}
 
 
 def _unique_fields(pairs: list[tuple[str, object]]) -> dict:
@@ -41,42 +72,71 @@ def _unique_fields(pairs: list[tuple[str, object]]) -> dict:
     return value
 
 
-def _json_object(value: object) -> tuple[dict | None, str, str]:
+def _json_object(value: object) -> tuple[dict | None, str, str, dict | None]:
     """Parse only a complete object or a single complete JSON fence."""
     if not isinstance(value, str) or not value.strip():
-        return None, "empty_output", "none"
+        return None, "empty_output", "none", None
     stripped = value.strip()
     fmt = "plain_json"
     if stripped.startswith("```"):
         match = _FENCE.fullmatch(stripped)
         if match is None:
-            return None, "invalid_json", "unsupported"
+            return None, "invalid_json", "unsupported", None
         body = match.group("body")
         if re.search(r"(?m)^```", body):
-            return None, "invalid_json", "unsupported"
+            return None, "invalid_json", "unsupported", None
         stripped = body.strip()
         fmt = "fenced_json"
     try:
         parsed = json.loads(stripped, object_pairs_hook=_unique_fields)
     except json.JSONDecodeError:
-        return None, "invalid_json", fmt
+        return None, "invalid_json", fmt, None
     except _DuplicateField:
-        return None, "invalid_schema", fmt
+        return None, "invalid_schema", fmt, _schema_issue(
+            None, "duplicate_property", "$", "object", "object", None)
     if not isinstance(parsed, dict):
-        return None, "invalid_schema", fmt
-    return parsed, "valid_json", fmt
+        return None, "invalid_schema", fmt, _schema_issue(
+            "type", "root_type", "$", "object", _json_type(parsed), None)
+    return parsed, "valid_json", fmt, None
+
+
+def _parse_plan_detailed(value: object) -> tuple[list[str] | None, str, str, dict | None]:
+    parsed, outcome, fmt, issue = _json_object(value)
+    if parsed is None:
+        return None, outcome, fmt, issue
+    extras = len(set(parsed) - {"steps"})
+    if "steps" not in parsed:
+        return None, "invalid_schema", fmt, _schema_issue(
+            "required", "missing_steps", "$.steps", "array", "missing", extras)
+    if extras:
+        return None, "invalid_schema", fmt, _schema_issue(
+            "additionalProperties", "unknown_fields", "$", "object", "object", extras)
+    steps = parsed["steps"]
+    if not isinstance(steps, list):
+        return None, "invalid_schema", fmt, _schema_issue(
+            "type", "steps_type", "$.steps", "array", _json_type(steps))
+    if not steps:
+        return None, "invalid_schema", fmt, _schema_issue(
+            "minItems", "too_few_steps", "$.steps", "array", "array")
+    if len(steps) > 8:
+        return None, "invalid_schema", fmt, _schema_issue(
+            "maxItems", "too_many_steps", "$.steps", "array", "array")
+    for step in steps:
+        if not isinstance(step, str):
+            return None, "invalid_schema", fmt, _schema_issue(
+                "type", "step_type", "$.steps[]", "string", _json_type(step))
+        if not step.strip():
+            return None, "invalid_schema", fmt, _schema_issue(
+                "minLength", "empty_step", "$.steps[]", "string", "string")
+        if len(step) > 300 or len(step.strip()) > 300:
+            return None, "invalid_schema", fmt, _schema_issue(
+                "maxLength", "long_step", "$.steps[]", "string", "string")
+    return [step.strip() for step in steps], "valid", fmt, None
 
 
 def _parse_plan(value: object) -> tuple[list[str] | None, str, str]:
-    parsed, outcome, fmt = _json_object(value)
-    if parsed is None:
-        return None, outcome, fmt
-    steps = parsed.get("steps")
-    if (not isinstance(steps, list) or not 1 <= len(steps) <= 8
-            or any(not isinstance(step, str) or not 1 <= len(step.strip()) <= 300
-                   for step in steps) or set(parsed) != {"steps"}):
-        return None, "invalid_schema", fmt
-    return [step.strip() for step in steps], "valid", fmt
+    steps, outcome, fmt, _ = _parse_plan_detailed(value)
+    return steps, outcome, fmt
 
 
 def _plan_steps(value: object) -> list[str] | None:
@@ -84,7 +144,7 @@ def _plan_steps(value: object) -> list[str] | None:
 
 
 def _parse_review(value: object) -> tuple[dict | None, str, str]:
-    parsed, outcome, fmt = _json_object(value)
+    parsed, outcome, fmt, _ = _json_object(value)
     if parsed is None:
         return None, outcome, fmt
     findings = parsed.get("findings")
@@ -97,7 +157,7 @@ def _parse_review(value: object) -> tuple[dict | None, str, str]:
 
 
 def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
-                     fmt: str) -> dict:
+                     fmt: str, schema_issue: dict | None = None) -> dict:
     """A fixed-shape record; never copy stdout, stderr, prompts or CLI events."""
     output = result.output if isinstance(result.output, dict) else {}
     response = output.get("final_text")
@@ -122,6 +182,7 @@ def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
     else:
         category = {"empty_output": "empty_output", "invalid_json": "json",
                     "invalid_schema": "schema", "valid": "ok"}.get(outcome, "unexpected_error")
+    source = output.get("response_source")
     return {
         "phase": task.operation, "correlation_id": task.correlation_id,
         "category": category, "provider_status": result.status.value,
@@ -129,6 +190,12 @@ def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
         "exit_code": result.exit_code if type(result.exit_code) is int else None,
         "captured_response_bytes": len(response.encode("utf-8")) if isinstance(response, str) else None,
         "input_format": fmt, "parser_outcome": outcome,
+        "response_source": (source if source in {
+            "none", "result_text", "structured_output", "missing_structured_output",
+            "invalid_envelope", "oversized_envelope", "oversized_structured_output",
+            "sensitive_structured_output"}
+                            else None),
+        "schema_error": schema_issue,
     }
 
 
@@ -205,8 +272,8 @@ class FixtureStageRuntime:
                       "Include implementation and acceptance checks. Task: " + FIXTURE_PROMPT)
             result = await self._call_claude(task, workspace, prompt)
             if result.status == AgentStatus.SUCCEEDED:
-                steps, outcome, fmt = _parse_plan(result.output.get("final_text"))
-                diagnostic = _safe_diagnostic(task, result, outcome, fmt)
+                steps, outcome, fmt, issue = _parse_plan_detailed(result.output.get("final_text"))
+                diagnostic = _safe_diagnostic(task, result, outcome, fmt, issue)
                 if steps is None:
                     result = replace(result, status=AgentStatus.FAILED,
                                      failure_class=FailureClass.AGENT,

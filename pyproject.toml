@@ -16,7 +16,7 @@ flow = [
 ]
 
 [tool.uv.sources]
-caf-agent-runtime = { git = "https://github.com/alex-kzr/caf-agent-runtime", rev = "c25a190729140953f77c02d80b0d5abb60577863" }
+caf-agent-runtime = { git = "https://github.com/alex-kzr/caf-agent-runtime", rev = "d457b7bb7130f7ae85731dbe8c0c82efaa9ef64d" }
 caf-control-api = { git = "https://github.com/alex-kzr/caf-control-api", rev = "e46c34d8a49affcaab6f61c27178f99c4661345d" }
 
 [dependency-groups]

@@ -10,6 +10,7 @@ from caf_agent_runtime import ClaudeRuntime
 
 from .api_store import WorkerAPIStore
 from .p0_flow_worker import run_one_flow_fixture
+from .p0_flow_fixture import PLAN_SCHEMA
 from .workspace_binding import resolve_sample_workspace
 
 
@@ -32,7 +33,8 @@ def main() -> int:
     store = WorkerAPIStore(os.environ["CAF_WORKER_API_URL"], os.environ["CAF_WORKER_TOKEN"])
     result = asyncio.run(run_one_flow_fixture(
         store, os.environ["CAF_WORKER_ID"], binding,
-        _NoCodingRuntime(), ClaudeRuntime(timeout_seconds=120, tools=()),
+        _NoCodingRuntime(), ClaudeRuntime(timeout_seconds=120, tools=(),
+                                         structured_schemas={"plan": PLAN_SCHEMA}),
         stop_after_plan=True,
     ))
     print("empty" if result is None else

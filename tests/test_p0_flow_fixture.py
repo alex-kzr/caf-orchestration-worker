@@ -15,7 +15,8 @@ from caf_control_api.storage import ClaimedRun
 from caf_orchestration_worker.flow_mode import PlanOnlyRuntime, run_flow, run_plan_only_flow
 from caf_orchestration_worker import p0_flow_worker
 from caf_orchestration_worker.p0_flow_fixture import (
-    FIXTURE_PROVIDERS, FixtureStageRuntime, _parse_plan, _parse_review,
+    FIXTURE_PROVIDERS, PLAN_SCHEMA, FixtureStageRuntime, _parse_plan,
+    _parse_plan_detailed, _parse_review,
     _plan_steps, _safe_diagnostic,
 )
 from caf_orchestration_worker.p0_code_worker import FIXTURE_PROMPT
@@ -61,6 +62,42 @@ def test_supported_claude_result_text_formats_and_negative_cases(case: dict) -> 
     steps, outcome, fmt = _parse_plan(case["text"])
     assert (outcome, fmt) == (case["outcome"], case["format"])
     assert (steps is not None) == (outcome == "valid")
+
+
+@pytest.mark.parametrize("payload,keyword,code,path,expected,actual,count", [
+    ('[]', "type", "root_type", "$", "object", "array", None),
+    ('{}', "required", "missing_steps", "$.steps", "array", "missing", 0),
+    ('{"private_token":"SECRET"}', "required", "missing_steps", "$.steps", "array", "missing", 1),
+    ('{"steps":"SECRET"}', "type", "steps_type", "$.steps", "array", "string", 0),
+    ('{"steps":[]}', "minItems", "too_few_steps", "$.steps", "array", "array", 0),
+    ('{"steps":[1]}', "type", "step_type", "$.steps[]", "string", "number", 0),
+    ('{"steps":["  "]}', "minLength", "empty_step", "$.steps[]", "string", "string", 0),
+    ('{"steps":["ok"],"private_token":"SECRET"}', "additionalProperties",
+     "unknown_fields", "$", "object", "object", 1),
+    ('{"steps":["ok"],"steps":["SECRET"]}', None, "duplicate_property",
+     "$", "object", "object", None),
+])
+def test_plan_schema_errors_are_fixed_identifiers_only(
+    payload: str, keyword: str | None, code: str, path: str,
+    expected: str, actual: str, count: int | None,
+) -> None:
+    steps, outcome, _, issue = _parse_plan_detailed(payload)
+    assert steps is None and outcome == "invalid_schema"
+    assert issue == {"schema_keyword": keyword, "error_code": code,
+                     "path": path, "expected_type": expected,
+                     "actual_type": actual, "unknown_field_count": count}
+    assert "SECRET" not in json.dumps(issue)
+    assert "private_token" not in json.dumps(issue)
+
+
+def test_plan_cli_schema_matches_local_cardinality_and_extra_field_policy() -> None:
+    assert PLAN_SCHEMA["required"] == ["steps"]
+    assert PLAN_SCHEMA["additionalProperties"] is False
+    steps = PLAN_SCHEMA["properties"]["steps"]
+    assert (steps["minItems"], steps["maxItems"]) == (1, 8)
+    assert (steps["items"]["minLength"], steps["items"]["maxLength"]) == (1, 300)
+    assert _parse_plan('{"steps":[' + ",".join('"x"' for _ in range(9)) + ']}')[0] is None
+    assert _parse_plan('{"steps":["' + "x" * 301 + '"]}')[0] is None
 
 
 @pytest.mark.parametrize("value,outcome", [
@@ -165,6 +202,9 @@ def test_flow_plan_failure_records_safe_parser_category(
     diagnostic = artifact.stages[0].output["diagnostic"]
     assert diagnostic["category"] == expected
     assert diagnostic["provider_status"] == "succeeded"
+    if final_text == '{"steps":[]}':
+        assert diagnostic["schema_error"]["error_code"] == "too_few_steps"
+        assert diagnostic["schema_error"]["path"] == "$.steps"
     assert "final_text" not in artifact.stages[0].output
 
 
@@ -408,6 +448,7 @@ def test_one_claim_persists_safe_plan_diagnostic_without_provider_text(
         "captured_response_bytes": len('private prose {"steps":["x"]}'.encode()),
         "input_format": "plain_json",
         "parser_outcome": "invalid_json",
+        "response_source": None, "schema_error": None,
     }
     assert "private prose" not in json.dumps(artifact)
     assert not codex.calls
@@ -416,6 +457,7 @@ def test_one_claim_persists_safe_plan_diagnostic_without_provider_text(
 @pytest.mark.parametrize("plan_text,expected_status,expected_result", [
     ('{"steps":["inspect sample","check gates"]}', "succeeded", "plan_valid"),
     ("unstructured response", "failed", "plan_failed"),
+    ('{"steps":["ok"],"private_token":"SECRET"}', "failed", "plan_failed"),
 ])
 def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
     tmp_path: Path, monkeypatch, plan_text: str,
@@ -462,7 +504,8 @@ def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
             self.calls.append(task)
             assert task.operation == "plan" and task.provider == "claude"
             return AgentResult(task.run_id, task.correlation_id, AgentStatus.SUCCEEDED,
-                               "safe", (), output={"final_text": plan_text})
+                               "safe", (), output={"final_text": plan_text,
+                                                   "response_source": "structured_output"})
 
     store, claude = Store(), PlanCLI("claude")
     artifact = asyncio.run(p0_flow_worker.run_one_flow_fixture(
@@ -473,7 +516,14 @@ def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
     assert store.completed == (expected_status, artifact)
     assert artifact["execution_kind"] == "p0-queued-plan-only-fixture"
     assert artifact["terminal_diagnostic"]["result"] == expected_result
+    assert artifact["terminal_diagnostic"]["response_source"] == "structured_output"
     assert artifact["terminal_diagnostic"]["stage_operations"] == ["plan"]
+    if "private_token" in plan_text:
+        issue = artifact["terminal_diagnostic"]["schema_error"]
+        assert (issue["schema_keyword"], issue["error_code"],
+                issue["unknown_field_count"]) == ("additionalProperties", "unknown_fields", 1)
+        assert "private_token" not in json.dumps(artifact)
+        assert "SECRET" not in json.dumps(artifact)
     assert [stage["operation"] for stage in artifact["stages"]] == ["plan"]
     assert len(claude.calls) == 1
     assert all(field not in artifact for field in ("diff", "commit", "review", "gates"))
