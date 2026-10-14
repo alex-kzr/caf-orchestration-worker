@@ -15,7 +15,7 @@ from caf_agent_runtime.windows_job import ProcessTreeCleanupError
 from caf_control_api.storage import ClaimedRun
 
 from .api_store import WorkerAPIStore
-from .flow_mode import run_flow
+from .flow_mode import run_flow, run_plan_only_flow
 from .p0_code_worker import ALLOWED_FILE, BASE_REVISION, FIXTURE_PROMPT, _git
 from .p0_flow_fixture import FIXTURE_PROVIDERS, FixtureStageRuntime
 from .queue_runner import dispatch_once
@@ -26,8 +26,9 @@ from .workspace_binding import WorkspaceBinding, resolve_sample_workspace
 async def run_one_flow_fixture(
     store: WorkerAPIStore, owner: str, binding: WorkspaceBinding,
     codex: CodingAgentRuntime, claude: CodingAgentRuntime,
+    *, stop_after_plan: bool = False,
 ) -> dict | None:
-    """Claim one scoped sample Run and persist bounded Flow stage evidence."""
+    """Claim one sample Run; optionally terminate after the diagnostic plan."""
     if (binding.workspace_id != "caf-sample-fixture-v1"
             or binding.repository_slug != "caf-sample-app"
             or binding.base_revision != BASE_REVISION
@@ -53,11 +54,12 @@ async def run_one_flow_fixture(
         if (claim.workspace_id != binding.workspace_id
                 or claim.target_repository != binding.repository_slug
                 or claim.base_revision != binding.base_revision
-                or claim.provider != "codex"
+                or claim.provider != ("claude" if stop_after_plan else "codex")
                 or claim.prompt != FIXTURE_PROMPT
-                or not 0 <= claim.max_corrections <= 3):
+                or (claim.max_corrections != 0 if stop_after_plan
+                    else not 0 <= claim.max_corrections <= 3)):
             return {"status": "blocked", "reason": "fixture_claim_mismatch"}
-        branch = f"caf-flow-experiment-{claim.id.hex[:12]}"
+        branch = ("caf-plan-probe-" if stop_after_plan else "caf-flow-experiment-") + claim.id.hex[:12]
         workspace = private_root / str(claim.id)
         _git(repository, "worktree", "add", "-b", branch, str(workspace), BASE_REVISION)
         cleanup_unverified = False
@@ -66,9 +68,11 @@ async def run_one_flow_fixture(
             request = RunRequest(str(claim.id), str(claim.correlation_id),
                                  claim.prompt, claim.provider, claim.max_corrections,
                                  claim.base_revision)
-            flow = await run_flow(request, runtime, workspace, FIXTURE_PROVIDERS)
+            flow = await (run_plan_only_flow if stop_after_plan else run_flow)(
+                request, runtime, workspace, FIXTURE_PROVIDERS)
             artifact: dict = {
-                "execution_kind": "p0-queued-flow-fixture",
+                "execution_kind": ("p0-queued-plan-only-fixture" if stop_after_plan
+                                   else "p0-queued-flow-fixture"),
                 "status": "blocked" if flow.status != "succeeded" else "succeeded",
                 "workflow_status": flow.status,
                 "reason": flow.reason,
@@ -86,6 +90,26 @@ async def run_one_flow_fixture(
                             "started_at": stage.started_at, "ended_at": stage.ended_at}
                            for stage in flow.stages],
             }
+            if stop_after_plan:
+                plan = flow.stages[0] if flow.stages else None
+                diagnostic = plan.output.get("diagnostic") if plan is not None else None
+                artifact["terminal_diagnostic"] = {
+                    "phase": "plan", "result": ("plan_valid" if flow.status == "succeeded"
+                                                else "plan_failed"),
+                    "category": diagnostic.get("category") if isinstance(diagnostic, dict) else None,
+                    "parser_outcome": (diagnostic.get("parser_outcome")
+                                       if isinstance(diagnostic, dict) else None),
+                    "stage_operations": [stage.operation for stage in flow.stages],
+                }
+                if artifact["terminal_diagnostic"]["stage_operations"] != ["plan"]:
+                    artifact["status"] = "blocked"
+                    artifact["reason"] = "plan_only_stage_violation"
+                    artifact["terminal_diagnostic"]["result"] = "stage_violation"
+                if _git(workspace, "status", "--porcelain"):
+                    artifact["status"] = "blocked"
+                    artifact["reason"] = "plan_only_workspace_modified"
+                    artifact["terminal_diagnostic"]["result"] = "workspace_modified"
+                return artifact
             reviews = [stage.output for stage in flow.stages if stage.operation == "review"]
             gates = [stage.output.get("gates") for stage in flow.stages if stage.operation == "test"]
             if reviews:

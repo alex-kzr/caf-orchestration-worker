@@ -95,6 +95,26 @@ prose and extra schema fields fail closed. The response byte count measures
 the runtime's redacted, capped capture, not the provider's original output.
 Synthetic offline fixtures cover both supported formats and negative cases.
 
+### Plan-only Flow diagnostic
+
+`python -m caf_orchestration_worker.p0_plan_worker` is an opt-in, one-Run
+diagnostic for the exact sample fixture. It requires `CAF_UMBRELLA_ROOT`,
+`CAF_WORKER_API_URL`, `CAF_WORKER_TOKEN` and `CAF_WORKER_ID`, and accepts only a
+claim bound to provider `claude`, the pinned sample base and prompt, and zero
+corrections in an isolated `caf_queue_test_*` database. It creates a temporary
+worktree outside the submodule, calls Claude with tools disabled for the
+structured plan, and terminates the Flow after that stage. This entrypoint
+does not construct a Codex runtime. A guard rejects any accidental downstream
+stage before a provider call or local test gate, and the result is blocked if
+any additional stage was recorded or
+the worktree changed. The terminal artifact includes a bounded
+`terminal_diagnostic` with `plan_valid`, `plan_failed`, `stage_violation` or
+`workspace_modified` and safe category/parser fields. It contains no diff,
+commit, review or gate fields. Success means that the plan parsed; it is not
+P0 acceptance or a claim about implementation quality. Offline tests cover
+both terminal outcomes and the absence of downstream calls. This entrypoint
+has not been run against the real Claude CLI and PostgreSQL.
+
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.
 The current one-Run HTTP grant cannot read a different source Run, so that

@@ -12,7 +12,7 @@ pytest.importorskip("crewai.flow.flow")
 
 from caf_agent_runtime import AgentResult, AgentStatus, CodingTask, FailureClass
 from caf_control_api.storage import ClaimedRun
-from caf_orchestration_worker.flow_mode import run_flow
+from caf_orchestration_worker.flow_mode import PlanOnlyRuntime, run_flow, run_plan_only_flow
 from caf_orchestration_worker import p0_flow_worker
 from caf_orchestration_worker.p0_flow_fixture import (
     FIXTURE_PROVIDERS, FixtureStageRuntime, _parse_plan, _parse_review,
@@ -228,6 +228,57 @@ def test_actual_flow_routes_two_providers_and_corrects_in_one_run(tmp_path: Path
     assert all(stage.task_id.startswith("flow-one:") for stage in artifact.stages)
 
 
+def test_plan_only_success_is_terminal_without_writer_or_review(tmp_path: Path) -> None:
+    fixture_repo(tmp_path)
+    codex, claude = FakeCLI("codex"), FakeCLI("claude")
+    artifact = asyncio.run(run_plan_only_flow(
+        RunRequest("plan-one", "corr-plan", FIXTURE_PROMPT, "claude", max_corrections=0),
+        FixtureStageRuntime(codex, claude), tmp_path, FIXTURE_PROVIDERS,
+    ))
+    assert (artifact.status, artifact.reason) == ("succeeded", "plan_only_complete")
+    assert artifact.ended_at is not None and artifact.iterations == 0
+    assert [stage.operation for stage in artifact.stages] == ["plan"]
+    assert artifact.stages[0].output["diagnostic"]["category"] == "ok"
+    assert not codex.calls
+    assert [task.operation for task in claude.calls] == ["plan"]
+    assert subprocess.run(["git", "-C", str(tmp_path), "status", "--porcelain"],
+                          capture_output=True, text=True, check=True).stdout == ""
+
+
+def test_plan_only_failure_is_terminal_without_writer_or_review(tmp_path: Path) -> None:
+    fixture_repo(tmp_path)
+
+    class BadPlan(FakeCLI):
+        async def execute(self, task, workspace, session_id=None):
+            self.calls.append(task)
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.SUCCEEDED,
+                               "safe", (), output={"final_text": "invalid plan"})
+
+    codex, claude = FakeCLI("codex"), BadPlan("claude")
+    artifact = asyncio.run(run_plan_only_flow(
+        RunRequest("plan-bad", "corr-plan", FIXTURE_PROMPT, "claude", max_corrections=0),
+        FixtureStageRuntime(codex, claude), tmp_path, FIXTURE_PROVIDERS,
+    ))
+    assert (artifact.status, artifact.reason) == ("blocked", "plan_agent")
+    assert artifact.ended_at is not None and artifact.iterations == 0
+    assert [stage.operation for stage in artifact.stages] == ["plan"]
+    assert artifact.stages[0].output["diagnostic"]["category"] == "json"
+    assert not codex.calls and [task.operation for task in claude.calls] == ["plan"]
+
+
+@pytest.mark.parametrize("operation", ["implement", "review", "correct", "test"])
+def test_plan_only_runtime_rejects_downstream_before_dispatch(
+    tmp_path: Path, operation: str,
+) -> None:
+    codex, claude = FakeCLI("codex"), FakeCLI("claude")
+    guarded = PlanOnlyRuntime(FixtureStageRuntime(codex, claude))
+    task = CodingTask("guard:1", "corr-guard", FIXTURE_PROMPT,
+                      FIXTURE_PROVIDERS[operation], operation)
+    with pytest.raises(RuntimeError, match="forbids downstream stages"):
+        asyncio.run(guarded.execute(task, tmp_path))
+    assert not codex.calls and not claude.calls
+
+
 def test_review_rejection_blocks_at_zero_corrections(tmp_path: Path) -> None:
     fixture_repo(tmp_path)
     codex, claude = FakeCLI("codex"), FakeCLI("claude")
@@ -360,3 +411,74 @@ def test_one_claim_persists_safe_plan_diagnostic_without_provider_text(
     }
     assert "private prose" not in json.dumps(artifact)
     assert not codex.calls
+
+
+@pytest.mark.parametrize("plan_text,expected_status,expected_result", [
+    ('{"steps":["inspect sample","check gates"]}', "succeeded", "plan_valid"),
+    ("unstructured response", "failed", "plan_failed"),
+])
+def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
+    tmp_path: Path, monkeypatch, plan_text: str,
+    expected_status: str, expected_result: str,
+) -> None:
+    from caf_orchestration_worker.p0_plan_worker import _NoCodingRuntime
+
+    root = tmp_path / "caf" / "repositories" / "caf-sample-app"
+    root.mkdir(parents=True)
+    fixture_repo(root)
+    base = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+    monkeypatch.setattr(p0_flow_worker, "BASE_REVISION", base)
+    external = tmp_path / "external"
+    external.mkdir()
+    claim = ClaimedRun(uuid4(), uuid4(), uuid4(), "caf-sample-app", base,
+                       FIXTURE_PROMPT, ["structured plan"], "claude", 0, 1,
+                       "caf-sample-fixture-v1")
+
+    class Store:
+        completed = None
+
+        def database_name(self):
+            return "caf_queue_test_offline"
+
+        def quarantine_expired(self):
+            return []
+
+        def claim_queued(self, owner, lease_seconds=60):
+            return claim
+
+        def claim_control(self, run_id, owner):
+            return True, False
+
+        def renew_lease(self, run_id, owner, lease_seconds=60):
+            return True
+
+        def complete_claim(self, run_id, owner, status, artifact):
+            self.completed = status, artifact
+            return True
+
+    class PlanCLI(FakeCLI):
+        async def execute(self, task, workspace, session_id=None):
+            self.calls.append(task)
+            assert task.operation == "plan" and task.provider == "claude"
+            return AgentResult(task.run_id, task.correlation_id, AgentStatus.SUCCEEDED,
+                               "safe", (), output={"final_text": plan_text})
+
+    store, claude = Store(), PlanCLI("claude")
+    artifact = asyncio.run(p0_flow_worker.run_one_flow_fixture(
+        store, "worker-caf-test", WorkspaceBinding(
+            "caf-sample-fixture-v1", "caf-sample-app", root, base, external,
+        ), _NoCodingRuntime(), claude, stop_after_plan=True,
+    ))
+    assert store.completed == (expected_status, artifact)
+    assert artifact["execution_kind"] == "p0-queued-plan-only-fixture"
+    assert artifact["terminal_diagnostic"]["result"] == expected_result
+    assert artifact["terminal_diagnostic"]["stage_operations"] == ["plan"]
+    assert [stage["operation"] for stage in artifact["stages"]] == ["plan"]
+    assert len(claude.calls) == 1
+    assert all(field not in artifact for field in ("diff", "commit", "review", "gates"))
+    assert subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                          capture_output=True, text=True, check=True).stdout == ""
+    assert len(subprocess.run(["git", "-C", str(root), "worktree", "list", "--porcelain"],
+                              capture_output=True, text=True, check=True).stdout
+               .split("worktree ")) == 2
