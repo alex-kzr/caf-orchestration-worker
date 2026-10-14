@@ -124,6 +124,15 @@ added. That Run failed during `plan` with category `schema` and parser outcome
 `invalid_schema`; it ran no downstream stage. The category does not identify
 the rejected field or value. See the [plan-only gate](../../docs/experiments/2026-10-14-plan-only-schema-gate.md).
 
+For an envelope rejected by the runtime, the plan parser now reports
+`not_run`, and the terminal diagnostic carries only the allowlisted envelope
+reason and type categories. An exit-zero provider result with a rejected
+envelope is categorized as `envelope`, not `empty_output`. Offline fixture
+tests cover this path; the previous live response was not retained. See the
+[envelope diagnostic gate](../../docs/experiments/2026-10-14-envelope-diagnostic-gate.md).
+The worker lockfile pins runtime commit `082a12b2d826388608cb3b1785ce07528cba7d99`;
+a fresh Git-backed install requires that commit to be published first.
+
 The earlier direct-database experiment used
 `CAF_REVIEW_SOURCE_RUN=<UUID>` to reapply a tested diff from a failed Run.
 The current one-Run HTTP grant cannot read a different source Run, so that

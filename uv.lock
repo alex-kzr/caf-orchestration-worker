@@ -326,7 +326,7 @@ wheels = [
 [[package]]
 name = "caf-agent-runtime"
 version = "0.1.0"
-source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=d457b7bb7130f7ae85731dbe8c0c82efaa9ef64d#d457b7bb7130f7ae85731dbe8c0c82efaa9ef64d" }
+source = { git = "https://github.com/alex-kzr/caf-agent-runtime?rev=082a12b2d826388608cb3b1785ce07528cba7d99#082a12b2d826388608cb3b1785ce07528cba7d99" }
 
 [[package]]
 name = "caf-control-api"
@@ -359,7 +359,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=d457b7bb7130f7ae85731dbe8c0c82efaa9ef64d" },
+    { name = "caf-agent-runtime", git = "https://github.com/alex-kzr/caf-agent-runtime?rev=082a12b2d826388608cb3b1785ce07528cba7d99" },
     { name = "caf-control-api", git = "https://github.com/alex-kzr/caf-control-api?rev=e46c34d8a49affcaab6f61c27178f99c4661345d" },
     { name = "crewai", marker = "extra == 'flow'", specifier = "==1.15.27" },
 ]

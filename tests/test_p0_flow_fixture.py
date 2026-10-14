@@ -448,7 +448,7 @@ def test_one_claim_persists_safe_plan_diagnostic_without_provider_text(
         "captured_response_bytes": len('private prose {"steps":["x"]}'.encode()),
         "input_format": "plain_json",
         "parser_outcome": "invalid_json",
-        "response_source": None, "schema_error": None,
+        "response_source": None, "envelope": None, "schema_error": None,
     }
     assert "private prose" not in json.dumps(artifact)
     assert not codex.calls
@@ -458,6 +458,7 @@ def test_one_claim_persists_safe_plan_diagnostic_without_provider_text(
     ('{"steps":["inspect sample","check gates"]}', "succeeded", "plan_valid"),
     ("unstructured response", "failed", "plan_failed"),
     ('{"steps":["ok"],"private_token":"SECRET"}', "failed", "plan_failed"),
+    ("REJECTED_ENVELOPE", "failed", "plan_failed"),
 ])
 def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
     tmp_path: Path, monkeypatch, plan_text: str,
@@ -503,6 +504,16 @@ def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
         async def execute(self, task, workspace, session_id=None):
             self.calls.append(task)
             assert task.operation == "plan" and task.provider == "claude"
+            if plan_text == "REJECTED_ENVELOPE":
+                return AgentResult(task.run_id, task.correlation_id, AgentStatus.FAILED,
+                                   "safe", (), FailureClass.AGENT, exit_code=0,
+                                   output={"final_text": None,
+                                           "response_source": "rejected_envelope",
+                                           "envelope_diagnostic": {
+                                               "reason": "multiple_json_values",
+                                               "framing": "multiple_json_values",
+                                               "result_type": "string",
+                                               "private_provider_field": "SECRET"}})
             return AgentResult(task.run_id, task.correlation_id, AgentStatus.SUCCEEDED,
                                "safe", (), output={"final_text": plan_text,
                                                    "response_source": "structured_output"})
@@ -516,8 +527,15 @@ def test_plan_only_claim_has_one_terminal_stage_and_no_coding_artifacts(
     assert store.completed == (expected_status, artifact)
     assert artifact["execution_kind"] == "p0-queued-plan-only-fixture"
     assert artifact["terminal_diagnostic"]["result"] == expected_result
-    assert artifact["terminal_diagnostic"]["response_source"] == "structured_output"
+    assert artifact["terminal_diagnostic"]["response_source"] == (
+        "rejected_envelope" if plan_text == "REJECTED_ENVELOPE" else "structured_output")
     assert artifact["terminal_diagnostic"]["stage_operations"] == ["plan"]
+    if plan_text == "REJECTED_ENVELOPE":
+        assert artifact["terminal_diagnostic"]["category"] == "envelope"
+        assert artifact["terminal_diagnostic"]["parser_outcome"] == "not_run"
+        assert artifact["terminal_diagnostic"]["envelope"]["reason"] == "multiple_json_values"
+        assert "private_provider_field" not in json.dumps(artifact)
+        assert "SECRET" not in json.dumps(artifact)
     if "private_token" in plan_text:
         issue = artifact["terminal_diagnostic"]["schema_error"]
         assert (issue["schema_keyword"], issue["error_code"],

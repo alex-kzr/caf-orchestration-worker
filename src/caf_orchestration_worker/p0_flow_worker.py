@@ -101,6 +101,8 @@ async def run_one_flow_fixture(
                                        if isinstance(diagnostic, dict) else None),
                     "response_source": (diagnostic.get("response_source")
                                         if isinstance(diagnostic, dict) else None),
+                    "envelope": (diagnostic.get("envelope")
+                                 if isinstance(diagnostic, dict) else None),
                     "schema_error": (diagnostic.get("schema_error")
                                      if isinstance(diagnostic, dict) else None),
                     "stage_operations": [stage.operation for stage in flow.stages],

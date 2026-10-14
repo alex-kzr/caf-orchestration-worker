@@ -156,6 +156,48 @@ def _parse_review(value: object) -> tuple[dict | None, str, str]:
     return parsed, "valid", fmt
 
 
+_ENVELOPE_REASONS = frozenset({
+    "ok", "oversized_envelope", "empty_stdout", "invalid_utf8", "duplicate_keys",
+    "trailing_data", "multiple_json_values", "malformed_json", "root_type",
+    "provider_error", "invalid_error_flag", "unexpected_type_tag",
+    "unexpected_subtype", "unexpected_status", "missing_structured_output",
+    "structured_output_type", "unsupported_schema_root",
+    "oversized_structured_output", "sensitive_structured_output",
+})
+_ENVELOPE_FRAMING = frozenset({
+    "single_json", "oversized", "empty", "invalid_utf8", "duplicate_keys",
+    "invalid_json", "trailing_data", "multiple_json_values",
+})
+_ENVELOPE_TYPES = frozenset({
+    "missing", "null", "boolean", "object", "array", "string", "number",
+})
+
+
+def _safe_envelope(value: object) -> dict | None:
+    """Rebuild runtime metadata from fixed sets; discard unknown provider data."""
+    if not isinstance(value, dict):
+        return None
+
+    def allowed(name: str, choices: frozenset[str]) -> str | None:
+        item = value.get(name)
+        return item if type(item) is str and item in choices else None
+
+    count = value.get("stdout_bytes_capped")
+    return {
+        "reason": allowed("reason", _ENVELOPE_REASONS),
+        "framing": allowed("framing", _ENVELOPE_FRAMING),
+        "root_type": allowed("root_type", _ENVELOPE_TYPES),
+        "type_tag": allowed("type_tag", frozenset({"missing", "result", "other", "non_string"})),
+        "subtype_tag": allowed("subtype_tag", frozenset({"missing", "success", "other", "non_string"})),
+        "status_tag": allowed("status_tag", frozenset({"missing", "success", "error", "other", "non_string"})),
+        "is_error": allowed("is_error", frozenset({"missing", "true", "false", "non_boolean"})),
+        "result_type": allowed("result_type", _ENVELOPE_TYPES),
+        "structured_output_type": allowed("structured_output_type", _ENVELOPE_TYPES),
+        "nested_structured_output_type": allowed("nested_structured_output_type", _ENVELOPE_TYPES),
+        "stdout_bytes_capped": (count if type(count) is int and 0 <= count <= 65537 else None),
+    }
+
+
 def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
                      fmt: str, schema_issue: dict | None = None) -> dict:
     """A fixed-shape record; never copy stdout, stderr, prompts or CLI events."""
@@ -163,10 +205,14 @@ def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
     response = output.get("final_text")
     stderr = output.get("stderr_tail")
     runtime_category = output.get("diagnostic_category")
+    envelope = _safe_envelope(output.get("envelope_diagnostic"))
     if result.status == AgentStatus.TIMED_OUT:
         category = "timeout"
     elif result.status == AgentStatus.CANCELLED:
         category = "cancelled"
+    elif envelope is not None and envelope["reason"] not in (None, "ok") \
+            and result.exit_code == 0:
+        category = "envelope"
     elif runtime_category == "authentication" or (
             result.status == AgentStatus.FAILED and isinstance(stderr, str)
             and _AUTH_LIMIT.search(stderr)):
@@ -193,8 +239,9 @@ def _safe_diagnostic(task: CodingTask, result: AgentResult, outcome: str,
         "response_source": (source if source in {
             "none", "result_text", "structured_output", "missing_structured_output",
             "invalid_envelope", "oversized_envelope", "oversized_structured_output",
-            "sensitive_structured_output"}
+            "sensitive_structured_output", "rejected_envelope"}
                             else None),
+        "envelope": envelope,
         "schema_error": schema_issue,
     }
 
@@ -271,7 +318,14 @@ class FixtureStageRuntime:
                       "Reply only with a JSON object containing 1-8 short steps in a 'steps' array. "
                       "Include implementation and acceptance checks. Task: " + FIXTURE_PROMPT)
             result = await self._call_claude(task, workspace, prompt)
-            if result.status == AgentStatus.SUCCEEDED:
+            envelope = _safe_envelope(result.output.get("envelope_diagnostic"))
+            if envelope is not None and envelope["reason"] not in (None, "ok"):
+                diagnostic = _safe_diagnostic(task, result, "not_run", "none")
+                result = replace(result, status=AgentStatus.FAILED,
+                                 failure_class=result.failure_class or FailureClass.AGENT,
+                                 summary="structured envelope rejected",
+                                 output={"diagnostic": diagnostic})
+            elif result.status == AgentStatus.SUCCEEDED:
                 steps, outcome, fmt, issue = _parse_plan_detailed(result.output.get("final_text"))
                 diagnostic = _safe_diagnostic(task, result, outcome, fmt, issue)
                 if steps is None:
